@@ -1,0 +1,122 @@
+/* HUDYAT Trainer: whitepaper look. Injected by ui/common.py on every page. */
+
+@font-face { font-family: "Poppins"; font-weight: 400; src: url("fonts/Poppins-Regular.ttf") format("truetype"); }
+@font-face { font-family: "Poppins"; font-weight: 500; src: url("fonts/Poppins-Medium.ttf") format("truetype"); }
+@font-face { font-family: "Poppins"; font-weight: 600; src: url("fonts/Poppins-SemiBold.ttf") format("truetype"); }
+@font-face { font-family: "Poppins"; font-weight: 700; src: url("fonts/Poppins-Bold.ttf") format("truetype"); }
+
+:root {
+  --text: #1A1A1A; --muted: #6B6B6B; --line: #E6E6E3; --surface: #F7F7F5;
+  --accent: #1F4E99; --ok: #2E7D32; --warn: #B26A00; --err: #B3261E;
+}
+
+html, body, .stMarkdown, button, input, textarea, select {
+  font-family: "Poppins", "Segoe UI", sans-serif;
+}
+.stMarkdown p, .stMarkdown li { line-height: 1.6; }
+
+/* ---- Streamlit chrome ---- */
+/* Hide the menu / Deploy / status, but NOT the toolbar itself: it holds the button that reopens a
+   collapsed sidebar (stExpandSidebarButton). */
+#MainMenu, footer, [data-testid="stMainMenu"], [data-testid="stToolbarActions"], [data-testid="stDecoration"],
+[data-testid="stStatusWidget"], .stDeployButton, [data-testid="stAppDeployButton"] { display: none !important; }
+/* The step list must always be there: no collapse button. If a browser remembers an older collapsed
+   state, a clear "Show steps" button brings it back. */
+[data-testid="stSidebarCollapseButton"] { display: none !important; }
+[data-testid="stExpandSidebarButton"] {
+  display: inline-flex !important; visibility: visible !important; position: fixed; top: 12px; left: 14px;
+  z-index: 1000; align-items: center; gap: 6px; padding: 6px 14px 6px 10px; border: 1px solid #E6E6E3;
+  border-radius: 8px; background: #fff; color: #1F4E99; font: 500 14px Poppins, sans-serif; cursor: pointer;
+}
+[data-testid="stExpandSidebarButton"]::after { content: "Show steps"; }
+[data-testid="stExpandSidebarButton"] svg, [data-testid="stExpandSidebarButton"] span[data-testid="stIconMaterial"] { color: #1F4E99; }
+header[data-testid="stHeader"] { background: transparent; height: 2.5rem; }
+[data-testid="stHeaderActionElements"], .stMarkdown a.anchor-link, [data-testid="stHeadingWithActionElements"] a { display: none !important; }
+
+/* ---- reading column ---- */
+.block-container, [data-testid="stMainBlockContainer"] {
+  max-width: 1100px !important; padding: 2.4rem 3rem 5rem 3rem !important;
+}
+@media (max-width: 1400px) {
+  .block-container, [data-testid="stMainBlockContainer"] { padding: 1.6rem 2rem 4rem 2rem !important; }
+}
+
+/* ---- page header ---- */
+.hd-step { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 500; margin: 0 0 2px 0; }
+.hd-title { font-size: 28px; font-weight: 600; color: var(--text); margin: 0 0 6px 0; line-height: 1.25; }
+.hd-lede { font-size: 15.5px; color: var(--muted); margin: 0 0 6px 0; max-width: 760px; line-height: 1.6; }
+
+/* ---- sections separated by hairline rules ---- */
+.sec { border-top: 1px solid var(--line); margin: 26px 0 10px 0; padding-top: 18px;
+       font-size: 15px; font-weight: 600; color: var(--text); }
+.sec small { font-weight: 400; color: var(--muted); font-size: 13px; margin-left: 8px; }
+.muted { color: var(--muted); font-size: 13.5px; }
+.note { color: var(--muted); font-size: 13px; line-height: 1.55; }
+
+/* ---- slim inline banners ---- */
+.hb { border: 1px solid var(--line); border-left: 3px solid var(--muted); border-radius: 6px;
+      padding: 9px 14px; margin: 6px 0 10px 0; font-size: 14px; line-height: 1.5; background: #fff; }
+.hb b { font-weight: 600; }
+.hb .hint { color: var(--muted); display: block; font-size: 13px; }
+.hb-info    { border-left-color: var(--accent); }
+.hb-success { border-left-color: var(--ok); }
+.hb-success b { color: var(--ok); }
+.hb-warning { border-left-color: var(--warn); }
+.hb-warning b { color: var(--warn); }
+.hb-error   { border-left-color: var(--err); }
+.hb-error b { color: var(--err); }
+
+/* ---- stat cards ---- */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 8px 0 4px 0; }
+.stat { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; background: #fff; }
+.stat .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text); line-height: 1.3; }
+.stat .l { font-size: 12.5px; color: var(--muted); }
+.stat.ok .v { color: var(--ok); } .stat.warn .v { color: var(--warn); } .stat.err .v { color: var(--err); }
+
+/* ---- tables ---- */
+.tbl-wrap { overflow-x: auto; margin: 6px 0 8px 0; }
+table.t { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+table.t th { text-align: left; font-weight: 500; color: var(--muted); border-bottom: 1px solid var(--line);
+             padding: 6px 10px; white-space: nowrap; background: #fff; }
+table.t td { border-bottom: 1px solid #F0F0EE; padding: 6px 10px; white-space: nowrap; }
+table.t th.n, table.t td.n { text-align: right; font-variant-numeric: tabular-nums; }
+table.t tr:last-child td { border-bottom: none; }
+table.t tr.total td { border-top: 1px solid var(--line); font-weight: 600; }
+table.t td.ok { color: var(--ok); } table.t td.warn { color: var(--warn); } table.t td.err { color: var(--err); }
+table.t td.zero { color: #B5B5B0; }
+table.t td.full { color: var(--ok); font-weight: 500; }
+
+.badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 500;
+         border: 1px solid var(--line); color: var(--muted); background: #fff; }
+.badge.ok { color: var(--ok); border-color: #CFE3D0; }
+.badge.err { color: var(--err); border-color: #EBCBC8; }
+.badge.warn { color: var(--warn); border-color: #EBD9BF; }
+.verdict { font-size: 22px; font-weight: 600; }
+.verdict.ok { color: var(--ok); } .verdict.err { color: var(--err); }
+
+/* ---- sidebar ---- */
+[data-testid="stSidebar"] { min-width: 260px !important; max-width: 280px !important; }
+[data-testid="stSidebarContent"] { padding-top: 0.2rem; }
+.sb-title { font-size: 19px; font-weight: 600; color: var(--text); margin: 0; line-height: 1.2; }
+.sb-sub { font-size: 12.5px; color: var(--muted); margin: 2px 0 14px 0; }
+.sb-next { font-size: 12.5px; color: var(--muted); margin: 14px 0 4px 2px; line-height: 1.5; }
+.sb-next b { color: var(--accent); font-weight: 500; }
+.sb-legend { font-size: 11.5px; color: var(--muted); margin: 6px 0 0 2px; }
+.sb-job { font-size: 12.5px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 6px;
+          padding: 7px 10px; margin: 12px 0 2px 0; background: #fff; }
+[data-testid="stSidebar"] [data-testid="stPageLink"] a { padding: 3px 8px; border-radius: 6px; }
+[data-testid="stSidebar"] [data-testid="stPageLink"] p { font-size: 14px; }
+[data-testid="stSidebar"] [data-testid="stPageLink-NavLink"][aria-current="page"],
+[data-testid="stSidebar"] a[aria-current="page"] { background: #fff; box-shadow: inset 2px 0 0 var(--accent); }
+[data-testid="stSidebar"] hr { margin: 12px 0; border-color: var(--line); }
+
+/* ---- widgets ---- */
+.stButton > button, .stDownloadButton > button { font-weight: 500; box-shadow: none !important; }
+.stButton > button:disabled { opacity: .55; }
+[data-testid="stExpander"] details { border-color: var(--line); border-radius: 8px; }
+[data-testid="stExpander"] summary p { font-size: 13.5px; color: var(--muted); }
+[data-testid="stCaptionContainer"], .stCaption { color: var(--muted); }
+div[data-testid="stProgress"] p { font-size: 13px; color: var(--muted); }
+[data-testid="stImage"] img { border: 1px solid var(--line); border-radius: 8px; }
+[data-testid="stCodeBlock"] pre, .stCode pre { font-size: 12px !important; }
+.stVideo video, [data-testid="stVideo"] { border-radius: 8px; }

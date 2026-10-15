@@ -1,0 +1,6 @@
+{
+  "name": "hudyat-tfjs-check",
+  "private": true,
+  "description": "Loads an exported model with the real @tensorflow/tfjs (pure JS, CPU) to check the export. Used by the tests only.",
+  "dependencies": { "@tensorflow/tfjs": "4.22.0" }
+}

@@ -1,0 +1,27 @@
+# HUDYAT Trainer - pinned dependencies for Python 3.12 (64-bit) on Windows 10/11.
+# mediapipe / opencv / numpy are the SAME versions as the recorder (HUDYAT - HAND TRACKER),
+# so landmarks are extracted exactly as the recorder's take review computes them.
+# Do NOT also install "opencv-python": two OpenCV packages in one venv break cv2.
+mediapipe==0.10.21
+opencv-contrib-python==4.11.0.86
+numpy==1.26.4
+protobuf==4.25.9
+pillow==12.3.0
+# H.264 previews in the app (the recorder saves mp4v, which browsers cannot play).
+imageio-ffmpeg==0.6.0
+
+# Training / evaluation (CPU; TensorFlow has no native-Windows GPU support since 2.10).
+tensorflow==2.19.1
+keras==3.15.1
+scikit-learn==1.9.1
+pandas==3.0.6
+matplotlib==3.11.2
+
+# The app
+streamlit==1.56.0
+# pyarrow 26 (pulled in by streamlit) needs NumPy 2; NumPy stays 1.26.4 to match the recorder.
+pyarrow==24.0.0
+
+# Tests (pytest) and the UI test (Playwright + Chromium; SETUP downloads the browser).
+pytest==9.1.1
+playwright==1.64.0

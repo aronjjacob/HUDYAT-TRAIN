@@ -1,0 +1,67 @@
+# HUDYAT Trainer: light "whitepaper" theme. Light only.
+
+[server]
+port = 8517
+enableStaticServing = true      # static/ (fonts, app.css) at app/static/...
+fileWatcherType = "none"
+runOnSave = false
+maxUploadSize = 8192          # MB: zipped datasets can be uploaded on the Dataset page
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"         # no Deploy button / developer menu
+showSidebarNavigation = false   # the sidebar is drawn by the app (numbered steps with state)
+showErrorDetails = "full"
+
+[theme]
+base = "light"
+primaryColor = "#1F4E99"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F7F7F5"
+textColor = "#1A1A1A"
+linkColor = "#1F4E99"
+linkUnderline = false
+borderColor = "#E6E6E3"
+dataframeBorderColor = "#E6E6E3"
+dataframeHeaderBackgroundColor = "#F7F7F5"
+showWidgetBorder = true
+showSidebarBorder = true
+blueColor = "#1F4E99"
+greenColor = "#2E7D32"
+orangeColor = "#B26A00"
+yellowColor = "#B26A00"
+redColor = "#B3261E"
+font = "Poppins, 'Segoe UI', sans-serif"
+headingFont = "Poppins, 'Segoe UI', sans-serif"
+baseFontSize = 15
+headingFontWeights = [600, 600, 600, 600, 600, 600]
+headingFontSizes = ["1.75rem", "1.25rem", "1.05rem", "1rem", "0.95rem", "0.9rem"]
+baseRadius = "8px"
+buttonRadius = "8px"
+chartCategoricalColors = ["#1F4E99", "#8A8A8A", "#B26A00", "#2E7D32", "#6B6B6B"]
+
+[[theme.fontFaces]]
+family = "Poppins"
+url = "app/static/fonts/Poppins-Regular.ttf"
+weight = 400
+
+[[theme.fontFaces]]
+family = "Poppins"
+url = "app/static/fonts/Poppins-Medium.ttf"
+weight = 500
+
+[[theme.fontFaces]]
+family = "Poppins"
+url = "app/static/fonts/Poppins-SemiBold.ttf"
+weight = 600
+
+[[theme.fontFaces]]
+family = "Poppins"
+url = "app/static/fonts/Poppins-Bold.ttf"
+weight = 700
+
+[theme.sidebar]
+backgroundColor = "#F7F7F5"
+secondaryBackgroundColor = "#FFFFFF"
