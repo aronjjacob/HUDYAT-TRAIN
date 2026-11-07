@@ -4,10 +4,9 @@ Writes work/datasets/<category>-<dataset>-landmarks-<YYYYMMDD-HHMM>/ and a .zip 
 
   signs.csv                 the category's signs (as in the recorder)
   signers.csv               code, hand
-  dataset/metadata.csv      one row per exported sample (the recorder's columns + review, reviewer, reviewed_at)
+  dataset/metadata.csv      one row per exported sample (the recorder's columns)
   landmarks/<category>/<sign>/<signer>/<clip>.npy   the usable samples, 32 frames x 149 values, float32
   landmarks_index.csv       their index rows (detection rates, trim, preprocessing id, format)
-  validation.csv            the review log of the category's clips
   excluded.csv              clips left out and why
   dataset.json              landmarks_only, classes, shape, preprocessing, counts, source
   FEATURES.md, README.txt
@@ -34,7 +33,7 @@ from . import settings as cfg
 from .landmarks import N_FRAMES
 
 DIM = 149                                   # values per frame of a rich149 sample (docs/FEATURES.md section 1)
-EXCLUDED_FIELDS = ["source_file", "sign_id", "signer", "take", "reason", "reviewer", "review_reason"]
+EXCLUDED_FIELDS = ["source_file", "sign_id", "signer", "take", "reason"]
 
 README = """HUDYAT landmark dataset: {category}
 {rule}
@@ -45,16 +44,15 @@ What is in it
       one sample per clip: a float32 array of shape (32, 149), the hands (and face location) in 32 frames
       evenly spread over the sign. FEATURES.md section 1 says what each of the 149 values is.
   dataset/metadata.csv   one row per sample: signer, signing hand, sign, take, the original video's path
-                         (file_path; the video itself is not included) and the expert review (review, reviewer)
+                         (file_path; the video itself is not included)
   landmarks_index.csv    per sample: the .npy path (file), hand detection rate, trim window, preprocessing settings
   signs.csv              the signs: sign_id, the label shown, takes per signer
   signers.csv            each signer's signing hand
-  validation.csv         the review log: every rejection and restore, with the reviewer's name and reason
   excluded.csv           clips left out of this dataset and why
   dataset.json           the same in one file: classes, sample shape, preprocessing settings, counts
 
-Review: "rejected" clips are left out (see excluded.csv); "restored" = rejected once, then put back; "not reviewed" =
-no expert decision recorded.
+Only clips usable for training are included. Clips rejected in the trainer, with low hand detection or not yet
+extracted in the current format are left out and listed in excluded.csv.
 
 Load it in Python
   import numpy as np, pandas as pd
@@ -89,14 +87,10 @@ def plan(paths: cfg.Paths, data_dir: Path, category: str, settings: dict | None 
     """(index rows to export, excluded clips with their reason) for one category."""
     usable = ds.usable_samples(paths, data_dir, settings)
     usable = usable[usable["category"] == category] if not usable.empty else usable
-    decisions = ds.latest_decisions(paths)
     excluded = []
 
     def skip(src, sign, signer, take, reason):
-        d = decisions.get(src, {})
-        excluded.append({"source_file": src, "sign_id": sign, "signer": signer, "take": take, "reason": reason,
-                         "reviewer": d.get("reviewer", "") if d.get("decision") == "rejected" else "",
-                         "review_reason": d.get("reason", "") if d.get("decision") == "rejected" else ""})
+        excluded.append({"source_file": src, "sign_id": sign, "signer": signer, "take": take, "reason": reason})
 
     ok = []
     for r in usable.to_dict("records"):
@@ -144,14 +138,10 @@ def export_category(ctx, category: str) -> dict:
                 ctx.progress(0.8 * i / len(rows), f"{category}: copying {i + 1} / {len(rows)} samples")
         _write_csv(tmp / "landmarks_index.csv", ds.INDEX_FIELDS, rows.to_dict("records"))
 
-        # metadata: the recorder's rows of these clips + the review
+        # metadata: the recorder's rows of these clips
         files = set(rows["source_file"])
         meta = ds.read_metadata(data_dir)
         meta = meta[meta["file_path"].isin(files)].copy()
-        decisions = ds.latest_decisions(paths)
-        meta["review"] = meta["file_path"].map(lambda f: decisions.get(f, {}).get("decision") or "not reviewed")
-        meta["reviewer"] = meta["file_path"].map(lambda f: decisions.get(f, {}).get("reviewer", ""))
-        meta["reviewed_at"] = meta["file_path"].map(lambda f: decisions.get(f, {}).get("time", ""))
         (tmp / "dataset").mkdir(parents=True, exist_ok=True)
         meta.to_csv(tmp / "dataset" / "metadata.csv", index=False)
 
@@ -163,10 +153,6 @@ def export_category(ctx, category: str) -> dict:
         by_signer = {g: sorted({hands.get(f, "right") for f in meta[meta["signer"] == g]["file_path"]}) for g in signers}
         _write_csv(tmp / "signers.csv", ["code", "hand"],
                    [{"code": g, "hand": h[0] if len(h) == 1 else ""} for g, h in by_signer.items()])
-        kept_cat = set(ds.kept_rows(data_dir, include_static=True).query("category == @category")["file_path"])
-        val = ds.read_validation(paths)
-        _write_csv(tmp / "validation.csv", ds.VALIDATION_FIELDS,
-                   val[val["source_file"].isin(kept_cat | files)].to_dict("records"))
         _write_csv(tmp / "excluded.csv", EXCLUDED_FIELDS, excluded)
 
         labels = {x.sign_id: x.sign_label for x in signs}
@@ -183,7 +169,6 @@ def export_category(ctx, category: str) -> dict:
             "preprocessing": {"settings": params, "ids_used": sorted(set(rows["preprocess"].astype(str)) - {""}),
                               "min_hand_detect_rate": float(s.get("min_hand_detect_rate", 0.8))},
             "counts": {sid: {g: int(counts.get((sid, g), 0)) for g in signers} for sid in labels},
-            "review": {k: int(v) for k, v in meta["review"].value_counts().items()},
             "n_excluded": len(excluded),
             "source": {"dataset": paths.dataset, "data_dir": str(data_dir)},
             "created": created.isoformat(timespec="seconds"),

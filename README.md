@@ -177,19 +177,19 @@ reorders the model's first layer for that, so the app gets exactly the trained m
 
 ### 6.3b Share the dataset (landmarks only)
 
-Preprocess → **Export the dataset** copies each chosen category's samples into
+Preprocess → **Export** on a category's card copies its training samples into
 `work\datasets\<category>-<dataset>-landmarks-<date>\` and a `.zip` of it. It holds:
 - the `.npy` samples
-- `dataset\metadata.csv`: signer, signing hand, sign, take and the expert review, per sample
+- `dataset\metadata.csv`: signer, signing hand, sign and take, per sample
 - `landmarks_index.csv`
 - `signs.csv`, `signers.csv`
-- `validation.csv`: the review log
 - `excluded.csv`: what was left out and why
 - `dataset.json`
 - `FEATURES.md`: what the 149 values are
 - `README.txt`
 
-No videos and no model. Only samples in the current format are included, so do **Re-extract all** first.
+For training only: no videos, no model, no review log. Only samples in the current format are included, so
+Extract each category first.
 
 **Open a shared dataset:** upload the `.zip` (or add the folder) on the Data page. It opens as *landmarks only*
 and goes straight to Test the model and Train model. Extracting is switched off, because there are no videos.

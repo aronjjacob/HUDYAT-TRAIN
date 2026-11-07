@@ -75,7 +75,7 @@ def status(snap: state.Snapshot) -> dict:
 
 def categories(snap: state.Snapshot, st_: dict, lm_only: bool) -> None:
     """One card per category: its state and its own buttons. Export = the category's landmark dataset (.npy with the
-    signs, signers, hands and expert review), to share or to train on elsewhere."""
+    signs, signers and hands), to share or to train on elsewhere."""
     from trainer import dataset_export
     for c, x in st_.items():
         todo = x["new"] + x["old"]
@@ -98,7 +98,7 @@ def categories(snap: state.Snapshot, st_: dict, lm_only: bool) -> None:
             with e:
                 job_button("dataset", "Export", ["--category", c], None if x["ready"] else "Nothing ready.",
                            key=f"pp_dsx_{c}", kind="secondary",
-                           help="A copy of the samples (.npy) with signs, signers, hands and the expert review. "
+                           help="A copy of the samples (.npy) with signs, signers and hands, for training. "
                                 "No videos, no model. It can be opened again on the Data page to train on it.")
             ex = dataset_export.list_exports(snap.paths, c)
             if ex and ex[0]["zip"].exists():

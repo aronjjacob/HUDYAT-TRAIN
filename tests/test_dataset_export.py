@@ -44,9 +44,9 @@ def test_export_has_only_usable_current_samples_and_says_why_others_are_left_out
     files = {r["file_path"] for r in meta}
     assert len(meta) == 3 * 3 * 4 - 2 and REJECTED not in files and OLD not in files
     assert all(r["signer"] in ("S1", "S2", "S3") for r in meta)              # never PUB
-    assert {r["review"] for r in meta} == {"not reviewed"}
+    assert "review" not in meta[0] and not (out / "validation.csv").exists()     # training data only
     why = {r["source_file"]: r for r in read(out / "excluded.csv")}
-    assert why[REJECTED]["reviewer"] == "Expert A" and why[REJECTED]["review_reason"] == "wrong handshape"
+    assert why[REJECTED]["reason"] == "rejected in Validation" and "reviewer" not in why[REJECTED]
     assert why[OLD]["reason"].startswith("old format")
     idx = read(out / "landmarks_index.csv")
     assert {r["source_file"] for r in idx} == files and len(list(out.rglob("*.npy"))) == len(meta)
@@ -55,7 +55,6 @@ def test_export_has_only_usable_current_samples_and_says_why_others_are_left_out
     info = json.loads((out / "dataset.json").read_text())
     assert info["landmarks_only"] and [c["sign_id"] for c in info["classes"]] == ["a", "b", "c"]
     assert info["sample"]["shape"] == [32, 149] and info["n_samples"] == len(meta) and info["n_excluded"] == 2
-    assert [r["source_file"] for r in read(out / "validation.csv")] == [REJECTED]
     assert (out / "README.txt").exists() and not list(paths.datasets.glob("*.tmp"))
     with zipfile.ZipFile(paths.datasets / f"{out.name}.zip") as z:
         assert "dataset.json" in z.namelist()                                 # no extra folder: short paths
