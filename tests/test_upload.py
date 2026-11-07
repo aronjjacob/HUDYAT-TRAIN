@@ -10,7 +10,6 @@ import pytest
 from trainer import dataset as ds
 from trainer import settings as cfg
 from trainer.dataset import PlainError
-from trainer.split import build_split
 from trainer.upload import assign_splits, group_key, import_folder, import_zip, list_imports
 
 
@@ -57,7 +56,8 @@ def test_videos_per_signer_builds_metadata_and_signs(s):
     assert [(x.category, x.sign_id) for x in ds.load_signs(r.root)] == [("colors", "blue"), ("colors", "red"),
                                                                           ("none", "none")]
     assert any("PUB" in n for n in r.notes)
-    assert len(ds.kept_rows(r.root)) == 12
+    assert len(ds.kept_rows(r.root)) == 8                                     # the none clips are ignored
+    assert ds.model_categories(ds.load_signs(r.root)) == ["colors"]
 
 
 def test_class_folders_of_photos(s, tmp_path):
@@ -86,12 +86,18 @@ def test_class_folders_of_photos(s, tmp_path):
         by_group.setdefault((x["sign_id"], group_key(x["file_path"].rsplit("/", 1)[1].rsplit(".", 1)[0])), set()).add(x["split"])
     assert all(len(v) == 1 for v in by_group.values())
     assert len(ds.kept_rows(r.root)) == 120                                       # usable without signers S1-S7
-    # the split step uses the fixed split; no none class in this dataset
+    # Test 1 on photos: copies of one photo always land in the same set; no none class in this dataset
+    import pandas as pd
+    from pathlib import Path
+    from trainer import splits
     kept = ds.kept_rows(r.root)
-    usable = kept.assign(file=[ds.npy_rel_path(x) for _, x in kept.iterrows()], excluded_reason="")
-    sp = build_split("alphabet_static", usable, signs)
-    assert sp["labels"] == ["a", "b", "c"] and len(sp["train"]) == 84 and len(sp["test"]) == 18
-    assert sp["warnings"] == []
+    clips = pd.DataFrame({"file": [ds.npy_rel_path(x) for _, x in kept.iterrows()], "label": kept["sign_id"].values,
+                          "signer": kept["signer"].values,
+                          "group": [f"{lab}|{group_key(Path(f).stem)}" for lab, f in zip(kept["sign_id"], kept["file_path"])]})
+    sp = splits.random_split(clips, seed=42)
+    assert sum(len(sp[p]) for p in splits.PARTS) == len(clips) == 120
+    where = {it["group"]: p for p in splits.PARTS for it in sp[p]}
+    assert all(where[it["group"]] == p for p in splits.PARTS for it in sp[p])
     assert [n for n, _ in list_imports(s)] == ["alphabet_static"]
     assert cfg.import_name(r.root, s) == "alphabet_static"
     assert cfg.work_dir(dict(s, data_dir=str(r.root))) == tmp_path / "work" / "imports" / "alphabet_static" / "work"
@@ -121,3 +127,60 @@ def test_unusable_upload_gives_plain_error_and_leaves_nothing(s, tmp_path):
     with pytest.raises(PlainError, match="at least two sign folders"):
         import_zip(make_zip({"only/a.jpg": b"x"}), "one.zip", s)
     assert list((tmp_path / "work" / "imports").iterdir()) == []
+
+
+# --- scan before import (Data page: show what was found, import only on "Import") -------------------
+from trainer.upload import scan_folder, scan_zip  # noqa: E402
+
+
+def test_scan_recorder_copy_folder(tmp_path, s):
+    root = tmp_path / "copy" / "HUDYAT - HAND TRACKER"
+    (root / "dataset").mkdir(parents=True)
+    (root / "signs.csv").write_text("category,sign_id,sign_label,reps,hands,mirror_ok\ncolors,red,Red,15,1,0\n"
+                                    "colors,blue,Blue,15,1,0\n")
+    (root / "signers.csv").write_text("code,hand\nS1,right\nS2,left\n")
+    (root / "dataset" / "metadata.csv").write_text(
+        "signer,signing_hand,category,sign_id,take,file_path,status\n"
+        "S1,right,colors,red,1,a.mp4,kept\nS1,right,colors,blue,1,b.mp4,kept\nS2,left,colors,red,1,c.mp4,kept\n"
+        "S2,left,colors,red,2,d.mp4,needs_rerecord\nPUB,,colors,red,1,e.mp4,kept\n")
+    r = scan_folder(tmp_path / "copy")
+    assert r.ok and r.layout == "recorder copy"
+    assert r.signers == {"S1": "right", "S2": "left"}
+    assert r.n_clips == 3 and r.signs == {"red": 2, "blue": 1}
+    assert any("PUB" in n for n in r.notes)
+    assert not cfg.imports_dir(s).exists()                       # nothing copied
+
+
+def test_scan_signer_folders_zip(s):
+    z = make_zip({f"raw/colors/{sg}/{sg2}/{sg}_{sg2}_{t:02d}.mp4": b"x"
+                  for sg in ("red", "blue") for sg2 in ("S1", "S2", "PUB") for t in range(2)})
+    r = scan_zip(z)
+    assert r.ok and r.layout == "videos per signer"
+    assert set(r.signers) == {"S1", "S2"} and r.n_clips == 8
+    assert r.signs == {"red": 4, "blue": 4}
+    assert any("PUB" in n for n in r.notes)
+
+
+def test_scan_photo_class_folders(tmp_path):
+    for lab in "ABC":
+        (tmp_path / "fsl" / lab).mkdir(parents=True)
+        for i in range(3):
+            (tmp_path / "fsl" / lab / f"{lab}{i}.jpg").write_bytes(b"x")
+    (tmp_path / "fsl" / "readme.jpg").write_bytes(b"x")
+    r = scan_folder(tmp_path / "fsl")
+    assert r.ok and r.layout == "one folder per sign"
+    assert r.signers == {} and r.n_clips == 9 and r.n_photos == 9
+    assert r.signs == {"A": 3, "B": 3, "C": 3}
+    assert any("not inside a sign folder" in n for n in r.notes)
+    assert any("Test 1" in n for n in r.notes)                     # photos: no signer IDs, only Test 1
+
+
+def test_scan_reports_problems_in_plain_language(tmp_path):
+    (tmp_path / "empty").mkdir()
+    r = scan_folder(tmp_path / "empty")
+    assert not r.ok and "No photos or videos" in r.problems[0]
+    (tmp_path / "one" / "A").mkdir(parents=True)
+    (tmp_path / "one" / "A" / "x.jpg").write_bytes(b"x")
+    r = scan_folder(tmp_path / "one")
+    assert not r.ok and "two sign folders" in r.problems[0]
+    assert not scan_zip(io.BytesIO(b"not a zip")).ok

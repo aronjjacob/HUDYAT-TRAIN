@@ -1,8 +1,8 @@
 """UI test: the real app, headless, driven by Playwright (Chromium) against a TEMPORARY dataset.
 
-Opens every page, clicks each main button in pipeline order, waits for the background jobs,
-and fails on any Streamlit exception or error banner. Screenshots of every page (1366x768,
-plus a full-length version and a 1920x1080 version) go to docs/screenshots/.
+Opens every page, clicks each main button in pipeline order (Preprocess, Data viewer, Test 1 / Test 2, Final
+model, Export, Live, Paper), waits for the background jobs, and fails on any Streamlit exception or error banner.
+Screenshots of every page (1366x768 with a full-length version, and 1920x1080) go to docs/screenshots/v2/.
 
 Slow (several minutes). Run alone with:  python -m pytest tests/test_ui.py
 """
@@ -22,13 +22,12 @@ import fake_dataset as fd
 from trainer.settings import PROJECT_DIR
 
 pytestmark = [pytest.mark.slow,
-              pytest.mark.skipif(not fd.real_available(), reason="recorder folder with FSL-105 clips not found")]
+              pytest.mark.skipif(not fd.real_available(), reason="recorder folder with S1-S3 clips not found")]
 playwright = pytest.importorskip("playwright.sync_api")
 
-SHOTS = PROJECT_DIR / "docs" / "screenshots"
-PAGES = [("", "1_dataset"), ("preprocess", "2_preprocess"), ("validation", "3_validation"), ("split", "4_split"),
-         ("train", "5_train"), ("evaluate", "6_evaluate"), ("export", "7_export"), ("live", "8_live_test"),
-         ("settings", "9_settings")]
+SHOTS = PROJECT_DIR / "docs" / "screenshots" / "v2"
+PAGES = [("", "1_data"), ("preprocess", "2_preprocess"), ("test", "3_test"), ("final", "4_final"),
+         ("live", "5_live"), ("paper", "6_paper"), ("settings", "7_settings")]
 JOB_TIMEOUT_S = 900
 
 
@@ -105,6 +104,11 @@ def click(pg, name):
     settle(pg, 800)
 
 
+def tab(pg, name):
+    pg.get_by_role("tab", name=name, exact=True).click()
+    settle(pg, 600)
+
+
 def wait_job(pg, app, where, expect="success"):
     """Wait until no job is running (sidebar) and the page shows the job's result banner."""
     t0 = time.time()
@@ -130,10 +134,17 @@ def shoot(pg, name):
     pg.wait_for_timeout(300)
 
 
+def set_number(pg, label, value):
+    box = pg.get_by_role("spinbutton", name=label)
+    box.fill(str(value))
+    box.press("Tab")
+    settle(pg, 600)
+
+
 def test_pages_open_before_anything_ran(page, app):
     for path, _ in PAGES:
         open_page(page, app, path)
-        assert_clean(page, app, path or "dataset")
+        assert_clean(page, app, path or "data")
     # the step list is always visible: no collapse button, and the reopen button is shown if collapsed
     page.hover('[data-testid="stSidebar"]')
     assert page.locator('[data-testid="stSidebar"]').get_attribute("aria-expanded") == "true"
@@ -143,86 +154,111 @@ def test_pages_open_before_anything_ran(page, app):
     page.locator('[data-testid="stExpandSidebarButton"]').click()
     page.wait_for_timeout(1000)
     assert page.locator('[data-testid="stSidebar"]').get_attribute("aria-expanded") == "true"
-    open_page(page, app, "train")
-    assert page.get_by_role("button", name="Start training").is_disabled()        # locked before Split
-    assert page.get_by_text("Run step 4 (Split) first.").count() == 1
+    side = page.locator('[data-testid="stSidebar"]').inner_text()
+    # the usual order, numbered, with the next step named; nothing is locked
+    assert "01" in side and "Data" in side and "06" in side and "Results for the paper" in side
+    assert "Next:" in side and "locked" not in side
+    assert "Train model" in side
+    open_page(page, app, "test")
+    assert page.get_by_text("No landmarks yet.").count() == 1                      # says what it needs; still opens
+    open_page(page, app, "")
+    assert page.get_by_text("1 left-handed", exact=False).count() >= 1
 
 
 def test_preprocess(page, app):
     open_page(page, app, "preprocess")
-    click(page, r"Extract new clips \(\d+\)")
+    assert page.get_by_role("tab", name="Categories", exact=True).get_attribute("aria-selected") == "true"
+    click(page, r"^Extract \d+$")                                              # the category card's own button
     msg = wait_job(page, app, "preprocess")
     assert "Extracted" in msg
-    assert page.get_by_role("button", name=re.compile(r"Extract new clips \(0\)")).is_disabled()
+    open_page(page, app, "preprocess")
+    assert page.get_by_role("button", name=re.compile(r"^Extract \d+$")).count() == 0     # nothing left to extract
+    assert page.get_by_role("button", name="Re-extract", exact=True).count() >= 1
+    click(page, "^Export$")
+    assert "Exported" in wait_job(page, app, "dataset export")
+    assert list((app["root"] / "work" / "datasets").glob("*.zip"))
+    open_page(page, app, "preprocess")
+    tab(page, "Check the results")
+    assert page.get_by_text("Hands per signer").count() == 1
     shoot(page, "2_preprocess")
 
 
-def test_validation(page, app):
-    open_page(page, app, "validation")
-    page.get_by_label("Reviewer name").fill("UI test")
-    page.get_by_label("Reviewer name").press("Enter")
+def test_data_viewer_reject_and_restore(page, app):
+    open_page(page, app, "")
+    page.get_by_role("tab", name="Review clips").click()
     settle(page)
-    click(page, "^Approve$")
-    page.get_by_label("Reason (needed to reject)").fill("test rejection")
-    page.get_by_label("Reason (needed to reject)").press("Enter")
+    page.get_by_label("Reason").fill("UI test rejection")
+    page.get_by_label("Reason").press("Enter")
     settle(page)
     click(page, "^Reject$")
-    assert_clean(page, app, "validation")
-    shoot(page, "3_validation")
+    assert page.get_by_text("Rejected: left out of every test and model.").count() == 1
+    click(page, "^Restore$")
+    assert_clean(page, app, "data viewer")
     rows = (app["root"] / "work" / "validation.csv").read_text().splitlines()
-    assert len(rows) == 3 and "approved" in rows[1] and "rejected" in rows[2]
+    assert len(rows) == 3 and "rejected" in rows[1] and "restored" in rows[2]
+    shoot(page, "1_data")
 
 
-def test_split(page, app):
-    open_page(page, app, "split")
-    click(page, "^Run split$")
-    wait_job(page, app, "split")
-    assert page.get_by_text("Samples per sign and split").count() == 1
-    shoot(page, "4_split")
-
-
-def test_train(page, app):
-    open_page(page, app, "train")
-    for label, value in (("Epochs", "4"), ("Aug. factor", "1"), ("Batch", "16")):
-        box = page.get_by_role("spinbutton", name=label)
-        box.fill(value)
-        box.press("Tab")
-        settle(page, 600)
-    click(page, "^Start training$")
+def test_test_page_runs_both_tests(page, app):
+    open_page(page, app, "test")
+    page.get_by_text("Settings for this run").click()
+    settle(page, 600)
+    set_number(page, "Max epochs", 6)
+    set_number(page, "Extra copies", 1)
+    set_number(page, "Batch", 16)
+    click(page, "^Run Test 2$")
     page.wait_for_selector(".sb-job", timeout=20000)
-    page.wait_for_timeout(6000)
-    shoot(page, "5_train_running")
-    wait_job(page, app, "train")
-    assert page.get_by_text("Saved models").count() == 1
-    shoot(page, "5_train")
-
-
-def test_evaluate(page, app):
-    open_page(page, app, "evaluate")
-    assert page.get_by_role("button", name="Evaluate on the test set").is_disabled()     # needs the tick box
-    page.get_by_text("Tuning is finished; evaluate on the test set once").click()
-    settle(page)
-    page.get_by_role("button", name="Evaluate on the test set", exact=True).click()
-    settle(page, 800)
-    wait_job(page, app, "evaluate")
+    page.wait_for_timeout(12000)
+    shoot(page, "3_test_running")
+    wait_job(page, app, "test 2")
+    click(page, "^Run Test 1$")
+    wait_job(page, app, "test 1")
+    open_page(page, app, "test")
     assert page.locator(".verdict").count() == 1
-    shoot(page, "6_evaluate")
+    assert page.get_by_text("Compare runs").count() == 1
+    assert page.get_by_text("Left-hand check").count() == 1
+    shoot(page, "3_test")
 
 
-def test_export(page, app):
-    open_page(page, app, "export")
-    click(page, "^Export to TF.js$")
+def train_quickly(pg):
+    pg.get_by_text("Training settings").click()
+    settle(pg, 600)
+    set_number(pg, "Max epochs", 6)
+    set_number(pg, "Extra copies", 1)
+    set_number(pg, "Batch", 16)
+
+
+def test_final_model_and_export(page, app):
+    open_page(page, app, "final")
+    train_quickly(page)
+    assert page.get_by_text("Use the settings of a test run").count() == 1        # inside Training settings
+    click(page, r"^Train model · v1$")
+    wait_job(page, app, "train model")
+    open_page(page, app, "final")
+    tab(page, "Export for the app")
+    click(page, "^Export for the app$")
     wait_job(page, app, "export")
-    assert page.get_by_text("Check passed").count() >= 1
-    shoot(page, "7_export")
+    open_page(page, app, "final")
+    assert page.get_by_text("Exported and checked", exact=False).count() == 1
+    shoot(page, "4_final")
 
 
-def test_live_test_page(page, app):
+def test_live_page_fails_plainly_without_a_camera(page, app):
     open_page(page, app, "live")
-    click(page, "^Start live test$")
+    click(page, "^Start$")
     msg = wait_job(page, app, "live", expect="error")
     assert "Could not open camera 9" in msg                                     # plain message, no crash
-    shoot(page, "8_live_test")
+    shoot(page, "5_live")
+
+
+def test_paper(page, app):
+    open_page(page, app, "paper")
+    click(page, "^Generate figures$")
+    wait_job(page, app, "paper")
+    open_page(page, app, "paper")
+    assert page.get_by_role("button", name="Download everything as .zip").count() == 1
+    assert page.get_by_text("Figure 1", exact=False).count() >= 1
+    shoot(page, "6_paper")
 
 
 def test_all_pages_after_pipeline_and_screenshots(page, app):
@@ -230,7 +266,7 @@ def test_all_pages_after_pipeline_and_screenshots(page, app):
         open_page(page, app, path)
         assert_clean(page, app, name)
         page.screenshot(path=str(SHOTS / f"{name}.png"))
-        if name in ("1_dataset", "9_settings"):
+        if name == "7_settings":
             shoot(page, name)
     page.set_viewport_size({"width": 1920, "height": 1080})
     (SHOTS / "1920x1080").mkdir(parents=True, exist_ok=True)

@@ -9,7 +9,7 @@ from trainer import dataset as ds
 from trainer import recorder
 from trainer import settings as cfg
 from trainer.combine import Part, combine, default_leave_out, items_of
-from trainer.split import build_split
+from trainer import splits
 from trainer.upload import import_folder
 
 
@@ -35,7 +35,7 @@ def two(tmp_path):
                      "status": "ok", "hand_detect_rate": 1.0, "source_file": m["file_path"], "split": m["split"],
                      "preprocess": recorder.params_id(recorder.default_params())})
     ds.write_index(pu, rows)
-    # recordings: alphabet_dynamic J, Z + none, signers S1 and S5
+    # recordings: alphabet_dynamic J, Z + none clips (ignored), signers S1 and S5
     rec = tmp_path / "rec"
     (rec / "dataset").mkdir(parents=True)
     (rec / "signs.csv").write_text("category,sign_id,sign_label,reps,hands,mirror_ok\n"
@@ -65,22 +65,22 @@ def test_combine_merges_reuses_and_keeps_splits(two):
     s, up, rec = two
     items = items_of(Part(up, "photos")) + items_of(Part(rec, "alphabet_dynamic"))
     leave = default_leave_out(items)
-    r = combine("alphabet", [i for i in items if i.id not in leave], none_from=rec, settings=s)
+    r = combine("alphabet", [i for i in items if i.id not in leave], settings=s)
     assert r.name == "alphabet" and cfg.check_data_dir(r.root) == []
     signs = ds.load_signs(r.root)
     assert [(x.category, x.sign_id, x.sign_label) for x in signs] == [
-        ("alphabet", "a", "A"), ("alphabet", "b", "B"), ("alphabet", "j", "J"), ("alphabet", "z", "Z"),
-        ("none", "none", "None")]
+        ("alphabet", "a", "A"), ("alphabet", "b", "B"), ("alphabet", "j", "J"), ("alphabet", "z", "Z")]  # no none
     kept = ds.kept_rows(r.root)
-    assert len(kept) == 20 + 4 + 2                                            # A, B photos + J, Z videos + none
+    assert len(kept) == 20 + 4                                                # A, B photos + J, Z videos
     assert r.n_reused == 20                                                   # the photo samples, not re-extracted
     j = kept[kept["sign_id"] == "j"]
     assert set(j["signer"]) == {"S1", "S5"} and set(j["split"]) == {""}        # recordings: split by signer
     sc = dict(s, data_dir=str(r.root))
     u = ds.usable_samples(cfg.Paths(sc), r.root, sc)
     assert len(u) == 20 and set(u["sign_id"]) == {"a", "b"}
-    sp = build_split("alphabet", u, signs)
-    assert sp["labels"] == ["a", "b", "j", "z", "none"]
-    assert len(sp["train"]) + len(sp["val"]) + len(sp["test"]) == 20
+    import pandas as pd
+    clips = pd.DataFrame({"file": u["file"], "label": u["sign_id"], "signer": u["signer"]})
+    sp = splits.random_split(clips, seed=1)
+    assert sum(len(sp[p]) for p in splits.PARTS) == 20
     # the source datasets are untouched
     assert len(ds.kept_rows(up)) == 30 and not (rec / "work").exists()

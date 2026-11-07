@@ -14,8 +14,10 @@ from . import settings as cfg
 
 INDEX_FIELDS = ["file", "category", "sign_id", "signer", "take", "fps", "n_frames", "trim_start",
                 "trim_end", "frames_kept", "hand_detect_rate", "both_hands_rate", "status",
-                "source_file", "width", "height", "extracted_at", "preprocess", "split"]
+                "source_file", "width", "height", "extracted_at", "preprocess", "split", "format",
+                "face_detect_rate"]
 SPLIT_NAMES = ("train", "val", "test")
+SAMPLE_FORMAT = "rich149"          # (32, 149) samples of docs/FEATURES.md; older samples (128 / 136) are re-extracted
 VALIDATION_FIELDS = ["time", "source_file", "decision", "reason", "reviewer"]
 
 STATUS_OK = "ok"
@@ -30,6 +32,11 @@ class PlainError(Exception):
         super().__init__(message)
         self.message = message
         self.hint = hint
+
+
+def plural(n: int, word: str, many: str | None = None) -> str:
+    """'1 clip', '3 clips': for messages, instead of 'clip(s)'."""
+    return f"{n} {word if n == 1 else many or word + 's'}"
 
 
 @dataclass(frozen=True)
@@ -61,13 +68,13 @@ def categories(signs: list[Sign]) -> list[str]:
 
 
 def model_categories(signs: list[Sign]) -> list[str]:
-    """Categories that get a model: all except none (added to each) and the static test."""
+    """Categories that get a model: all except none (ignored) and the static test."""
     return [c for c in categories(signs) if c != cfg.NONE_CATEGORY and c not in cfg.EXCLUDED_CATEGORIES]
 
 
 def extract_categories(signs: list[Sign], include_static: bool = False) -> list[str]:
-    """Categories whose clips are extracted: every model category + none (+ the static test set if asked)."""
-    out = model_categories(signs) + ([cfg.NONE_CATEGORY] if cfg.NONE_CATEGORY in categories(signs) else [])
+    """Categories whose clips are extracted: every model category (+ the static test set if asked)."""
+    out = model_categories(signs)
     if include_static:
         out += [c for c in categories(signs) if c in cfg.EXCLUDED_CATEGORIES]
     return out
@@ -117,15 +124,51 @@ def npy_rel_path(row) -> str:
     return f"landmarks/{row['category']}/{row['sign_id']}/{row['signer']}/{stem}.npy"
 
 
+HANDS = ("right", "left")
+
+
+def signer_hands(data_dir: Path) -> dict[str, str]:
+    """{signer: "right" | "left"} from signers.csv (column `hand`, or `signing_hand`)."""
+    path = Path(data_dir) / "signers.csv"
+    out: dict[str, str] = {}
+    if path.exists():
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            for row in csv.DictReader(f):
+                code = (row.get("code") or row.get("signer") or "").strip()
+                hand = (row.get("hand") or row.get("signing_hand") or "").strip().lower()
+                if code and hand in HANDS:
+                    out[code] = hand
+    return out
+
+
+def clip_hands(data_dir: Path) -> dict[str, str]:
+    """{file_path: "right" | "left"}: the clip's `signing_hand` in metadata.csv, else its signer's hand in
+    signers.csv, else right (photos are always stored as a right hand)."""
+    meta = read_metadata(data_dir)
+    by_signer = signer_hands(data_dir)
+    out = {}
+    if meta.empty:
+        return out
+    col = meta["signing_hand"].str.strip().str.lower() if "signing_hand" in meta.columns else None
+    for i, r in meta.iterrows():
+        h = col[i] if col is not None else ""
+        out[r["file_path"]] = h if h in HANDS else by_signer.get(r["signer"], "right")
+    return out
+
+
 # ----------------------------------------------------------------------------
 # landmarks_index.csv
 # ----------------------------------------------------------------------------
 def read_index(paths: cfg.Paths) -> pd.DataFrame:
     if not paths.index_csv.exists():
         return pd.DataFrame(columns=INDEX_FIELDS)
-    df = pd.read_csv(paths.index_csv, dtype={"signer": str, "take": str, "split": str, "preprocess": str},
-                     keep_default_na=False)
-    for c in ("hand_detect_rate", "both_hands_rate", "fps"):
+    df = pd.read_csv(paths.index_csv, dtype={"signer": str, "take": str, "split": str, "preprocess": str,
+                                             "format": str}, keep_default_na=False)
+    if "format" not in df.columns:
+        df["format"] = ""
+    if "face_detect_rate" not in df.columns:
+        df["face_detect_rate"] = ""
+    for c in ("hand_detect_rate", "both_hands_rate", "fps", "face_detect_rate"):
         df[c] = pd.to_numeric(df[c], errors="coerce")
     return df
 
@@ -158,7 +201,7 @@ def latest_decisions(paths: cfg.Paths) -> dict[str, dict]:
 
 
 def add_validation(paths: cfg.Paths, source_file: str, decision: str, reason: str, reviewer: str) -> None:
-    if decision not in ("approved", "rejected"):
+    if decision not in ("approved", "rejected", "restored"):
         raise ValueError(decision)
     paths.validation_csv.parent.mkdir(parents=True, exist_ok=True)
     new = not paths.validation_csv.exists()
@@ -179,7 +222,7 @@ def rejected_files(paths: cfg.Paths) -> set[str]:
 # ----------------------------------------------------------------------------
 def usable_samples(paths: cfg.Paths, data_dir: Path, settings: dict | None = None) -> pd.DataFrame:
     """Index rows that may be used: extracted ok, still kept in metadata, not rejected,
-    detection >= threshold (except none). Adds a column 'excluded_reason' on a copy of all rows."""
+    detection >= threshold. Adds a column 'excluded_reason' on a copy of all rows."""
     s = settings or cfg.load_settings()
     thr = float(s.get("min_hand_detect_rate", 0.8))
     idx = read_index(paths)
@@ -196,7 +239,7 @@ def usable_samples(paths: cfg.Paths, data_dir: Path, settings: dict | None = Non
             reasons.append("no longer kept / expert rejected")
         elif r["source_file"] in rejected:
             reasons.append("rejected in Validation")
-        elif r["category"] != cfg.NONE_CATEGORY and not (r["hand_detect_rate"] >= thr):
+        elif not (r["hand_detect_rate"] >= thr):
             reasons.append(f"hand detection below {thr:.0%}")
         else:
             reasons.append("")

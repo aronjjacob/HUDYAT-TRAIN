@@ -2,7 +2,7 @@
 
 Signs are merged by their label (sign_label, case-insensitive): "J" from the photos and "J" from the
 recordings (sign_id letter_j) are the same sign. Leave out the copies you do not want (e.g. the J / Z
-photos, since J and Z are movements). The none class can be added from a dataset that has one.
+photos, since J and Z are movements). A combined model has only signs, never a none class.
 
 Nothing is copied except already-extracted samples: the new metadata.csv points to the original files
 (absolute paths), and samples made with the current preprocessing settings are reused, so only the
@@ -97,8 +97,7 @@ def _source_samples(data_dir: Path, settings: dict) -> dict[str, dict]:
     return out
 
 
-def combine(name: str, items: list[Item], none_from: Path | None = None,
-            settings: dict | None = None) -> CombineResult:
+def combine(name: str, items: list[Item], settings: dict | None = None) -> CombineResult:
     if not items:
         raise ds.PlainError("Nothing chosen to combine.", "Tick at least two signs.")
     s = settings or cfg.load_settings()
@@ -111,36 +110,30 @@ def combine(name: str, items: list[Item], none_from: Path | None = None,
         new_work = cfg.Paths(dict(s, data_dir=str(data))).work
         sources: dict[str, dict] = {}
         parts = list(dict.fromkeys(it.part for it in items))
-        if none_from is not None:
-            parts.append(Part(Path(none_from), cfg.NONE_CATEGORY))
         for part in parts:
             if str(part.data_dir) not in sources:
                 sources[str(part.data_dir)] = _source_samples(part.data_dir, s)
             kept = ds.kept_rows(part.data_dir, include_static=True)
             kept = kept[kept["category"] == part.category]
-            if part.category == cfg.NONE_CATEGORY:
-                wanted = {cfg.NONE_SIGN: (cfg.NONE_SIGN, "None")}
-            else:
-                wanted = {it.sign_id: (slug(it.label), it.label) for it in items if it.part == part}
+            wanted = {it.sign_id: (slug(it.label), it.label) for it in items if it.part == part}
             mirror = {x.sign_id: x.mirror_ok for x in ds.load_signs(part.data_dir) if x.category == part.category}
             for _, m in kept[kept["sign_id"].isin(list(wanted))].iterrows():
                 new_sid, label = wanted[m["sign_id"]]
-                new_cat = cfg.NONE_CATEGORY if part.category == cfg.NONE_CATEGORY else cat
                 src_file = Path(part.data_dir) / m["file_path"]
                 row = {k: m.get(k, "") for k in META_FIELDS}
-                row.update(category=new_cat, sign_id=new_sid, sign_label=label, file_path=str(src_file),
+                row.update(category=cat, sign_id=new_sid, sign_label=label, file_path=str(src_file),
                            status="kept", split=m.get("split", "") or "",
                            kind="image" if src_file.suffix.lower() in (".jpg", ".jpeg", ".png", ".bmp", ".webp")
                            else "video")
                 rows.append(row)
-                signs.setdefault((new_cat, new_sid), (label, mirror.get(m["sign_id"], 0)))
+                signs.setdefault((cat, new_sid), (label, mirror.get(m["sign_id"], 0)))
                 # reuse the sample when it was made with the current preprocessing settings
                 src = sources[str(part.data_dir)].get(str(m["file_path"]))
                 if src is not None and (src.get("preprocess") or recorder.params_id(recorder.default_params())) == pid:
                     rel = ds.npy_rel_path(row)
                     (new_work / rel).parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(Path(src["_work"]) / src["file"], new_work / rel)
-                    index_rows.append(dict(src, file=rel, category=new_cat, sign_id=new_sid, source_file=str(src_file),
+                    index_rows.append(dict(src, file=rel, category=cat, sign_id=new_sid, source_file=str(src_file),
                                            split=row["split"], preprocess=pid))
                     reused += 1
         (data / "dataset").mkdir(parents=True, exist_ok=True)
@@ -149,8 +142,8 @@ def combine(name: str, items: list[Item], none_from: Path | None = None,
             w.writeheader()
             w.writerows(rows)
         lines = ["category,sign_id,sign_label,reps,hands,mirror_ok"]
-        for (c, sid), (label, mir) in sorted(signs.items(), key=lambda kv: (kv[0][0] == cfg.NONE_CATEGORY, kv[0][1])):
-            lines.append(f"{c},{sid},{label},{10 if c == cfg.NONE_CATEGORY else 15},1,{int(mir)}")
+        for (c, sid), (label, mir) in sorted(signs.items(), key=lambda kv: kv[0][1]):
+            lines.append(f"{c},{sid},{label},15,1,{int(mir)}")
         (data / "signs.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
         if index_rows:
             ds.write_index(cfg.Paths(dict(s, data_dir=str(data))),
@@ -158,14 +151,13 @@ def combine(name: str, items: list[Item], none_from: Path | None = None,
         (data / "combined_from.json").write_text(json.dumps({
             "created": datetime.now().isoformat(timespec="seconds"),
             "parts": [{"dataset": str(it.part.data_dir), "category": it.part.category, "sign": it.sign_id,
-                       "as": slug(it.label)} for it in items],
-            "none_from": str(none_from) if none_from else None}, indent=2), encoding="utf-8")
+                       "as": slug(it.label)} for it in items]}, indent=2), encoding="utf-8")
     except BaseException:
         shutil.rmtree(data.parent, ignore_errors=True)
         raise
     res = CombineResult(data, final, cat, len(rows), reused,
                         {lab: int(sum(r["sign_label"] == lab for r in rows)) for (_, _), (lab, _) in signs.items()})
     if len(rows) > reused:
-        res.notes.append(f"{len(rows) - reused} file(s) still need preprocessing (step 2).")
+        res.notes.append(f"{len(rows) - reused} file(s) still need preprocessing (Preprocess page).")
     return res
 

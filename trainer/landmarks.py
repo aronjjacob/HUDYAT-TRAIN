@@ -53,9 +53,8 @@ class Hand:
     landmarks: np.ndarray   # (21,3)
 
 
-def frame_vector(hands: list[Hand], width: int, height: int) -> tuple[np.ndarray, bool]:
-    """(128-vector, duplicate_label_happened). Slots by label; higher score wins a shared label."""
-    v = np.zeros(FRAME_DIM, dtype=np.float32)
+def pick_hands(hands: list[Hand]) -> tuple[dict[str, Hand], bool]:
+    """{label: hand} by handedness label; a shared label goes to the higher score. (hands, duplicate)."""
     best: dict[str, Hand] = {}
     duplicate = False
     for h in hands:
@@ -66,6 +65,13 @@ def frame_vector(hands: list[Hand], width: int, height: int) -> tuple[np.ndarray
             if h.score <= best[h.label].score:
                 continue
         best[h.label] = h
+    return best, duplicate
+
+
+def frame_vector(hands: list[Hand], width: int, height: int) -> tuple[np.ndarray, bool]:
+    """(128-vector, duplicate_label_happened). Slots by label; higher score wins a shared label."""
+    v = np.zeros(FRAME_DIM, dtype=np.float32)
+    best, duplicate = pick_hands(hands)
     for label, off, flag in (("Left", LEFT_OFFSET, LEFT_FLAG), ("Right", RIGHT_OFFSET, RIGHT_FLAG)):
         if label in best:
             v[off:off + HAND_DIM] = normalize_hand(best[label].landmarks, width, height)
@@ -76,17 +82,44 @@ def frame_vector(hands: list[Hand], width: int, height: int) -> tuple[np.ndarray
 # ----------------------------------------------------------------------------
 # 6.5 resampling
 # ----------------------------------------------------------------------------
+def _slots(width: int) -> list[tuple[np.ndarray, tuple[int, ...], int | None]]:
+    """[(value indices, presence flags, flag index to copy)] of a frame layout (docs/FEATURES.md).
+
+    128 = the README 6 frame; 141 = the v3 model input (+ location against the face, as the app resamples it);
+    149 = rich (+ raw wrist and size per hand + location against the face). A hand's location values are
+    interpolated only when the hand AND the face are in both frames (README 6.5)."""
+    left = list(range(LEFT_OFFSET, LEFT_OFFSET + HAND_DIM))
+    right = list(range(RIGHT_OFFSET, RIGHT_OFFSET + HAND_DIM))
+    if width == FRAME_DIM:
+        return [(np.array(left), (LEFT_FLAG,), LEFT_FLAG), (np.array(right), (RIGHT_FLAG,), RIGHT_FLAG)]
+    if width == FRAME_DIM + 13:
+        face = 140
+        return [(np.array(left), (LEFT_FLAG,), LEFT_FLAG), (np.array(right), (RIGHT_FLAG,), RIGHT_FLAG),
+                (np.arange(128, 134), (LEFT_FLAG, face), None), (np.arange(134, 140), (RIGHT_FLAG, face), None),
+                (np.array([], int), (), face)]
+    if width != 149:
+        raise ValueError(f"unknown frame layout with {width} values")
+    left += [128, 129, 130, 134]
+    right += [131, 132, 133, 135]
+    face = 148
+    return [(np.array(left), (LEFT_FLAG,), LEFT_FLAG), (np.array(right), (RIGHT_FLAG,), RIGHT_FLAG),
+            (np.arange(136, 142), (LEFT_FLAG, face), None), (np.arange(142, 148), (RIGHT_FLAG, face), None),
+            (np.array([], int), (), face)]
+
+
 def resample(frames: np.ndarray, n_out: int = N_FRAMES, times: np.ndarray | None = None) -> np.ndarray:
-    """(T,128) -> (n_out,128). Each hand slot separately; never blends with an absent hand.
+    """(T,D) -> (n_out,D) for D = 128 / 141 / 149. Each hand slot separately (a hand's extra values go with it);
+    never blends with an absent hand (or, for the location values, an absent face).
 
     `times` (optional, length n_out, values in 0..T-1) replaces the uniform positions
     j*(T-1)/(n_out-1); augmentation uses it for time warping.
     """
     frames = np.asarray(frames, dtype=np.float32)
-    T = frames.shape[0]
+    T, D = frames.shape
     if T == 0:
         raise ValueError("no frames to resample")
-    out = np.zeros((n_out, FRAME_DIM), dtype=np.float32)
+    slots = _slots(D)
+    out = np.zeros((n_out, D), dtype=np.float32)
     if times is None:
         times = np.arange(n_out) * (T - 1) / (n_out - 1) if n_out > 1 else np.zeros(1)
     for j, t in enumerate(times):
@@ -95,13 +128,13 @@ def resample(frames: np.ndarray, n_out: int = N_FRAMES, times: np.ndarray | None
         i1 = min(i0 + 1, T - 1)
         w = t - i0
         nearest = i0 if w < 0.5 else i1
-        for off, flag in ((LEFT_OFFSET, LEFT_FLAG), (RIGHT_OFFSET, RIGHT_FLAG)):
-            sl = slice(off, off + HAND_DIM)
-            if frames[i0, flag] > 0.5 and frames[i1, flag] > 0.5:
-                out[j, sl] = (1 - w) * frames[i0, sl] + w * frames[i1, sl]
+        for idx, flags, flag in slots:
+            if all(frames[i0, f] > 0.5 and frames[i1, f] > 0.5 for f in flags):
+                out[j, idx] = (1 - w) * frames[i0, idx] + w * frames[i1, idx]
             else:
-                out[j, sl] = frames[nearest, sl]
-            out[j, flag] = frames[nearest, flag]
+                out[j, idx] = frames[nearest, idx]
+            if flag is not None:
+                out[j, flag] = frames[nearest, flag]
     return out
 
 
@@ -112,8 +145,8 @@ def present_mask(frames: np.ndarray) -> np.ndarray:
 
 @dataclass
 class ClipResult:
-    sample: np.ndarray          # (32,128) float32
-    frames: np.ndarray          # (T,128) all frames before trimming
+    sample: np.ndarray          # (32,149) float32, the rich sample (docs/FEATURES.md)
+    frames: np.ndarray          # (T,149) all frames before trimming
     hand_counts: np.ndarray     # (T,) number of hands MediaPipe detected per frame
     fps: float
     width: int
@@ -123,6 +156,7 @@ class ClipResult:
     hand_detect_rate: float     # inside the sign window
     both_hands_rate: float
     duplicate_frames: list[int] = field(default_factory=list)
+    face_detect_rate: float | None = None   # inside the sign window; None = no face model ran (photos)
 
     @property
     def n_frames(self) -> int:
@@ -166,6 +200,38 @@ def create_landmarker(model_path: Path = cfg.MODEL_PATH, data_dir: Path | None =
     return vision.HandLandmarker.create_from_options(options)
 
 
+def face_model_path(data_dir: Path | None = None) -> Path:
+    """The face model: this project's models/ folder, else the recorder's (Setup step 5 of its README)."""
+    if cfg.FACE_MODEL_PATH.exists() or data_dir is None:
+        return cfg.FACE_MODEL_PATH
+    other = Path(data_dir) / "models" / "face_landmarker.task"
+    return other if other.exists() else cfg.FACE_MODEL_PATH
+
+
+def create_face_landmarker(data_dir: Path | None = None):
+    """FaceLandmarker in VIDEO mode, one face (README 6.7), the same settings as the recorder's take review."""
+    from mediapipe.tasks.python import BaseOptions, vision
+    path = face_model_path(data_dir if data_dir is not None else cfg.data_dir(cfg.load_settings()))
+    if not path.exists():
+        raise FileNotFoundError(
+            f"MediaPipe face model not found at {path}. Copy face_landmarker.task from the recorder's models "
+            f"folder into this project's models folder.")
+    return vision.FaceLandmarker.create_from_options(vision.FaceLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=str(path)), running_mode=vision.RunningMode.VIDEO, num_faces=1))
+
+
+def detect_face(landmarker, frame_bgr: np.ndarray, timestamp_ms: int) -> np.ndarray | None:
+    """The face's landmarks (N,3) on one UNMIRRORED BGR frame, or None if no face was found."""
+    import cv2
+    import mediapipe as mp
+    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    result = landmarker.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb)),
+                                         int(timestamp_ms))
+    if not result.face_landmarks:
+        return None
+    return np.array([[p.x, p.y, p.z] for p in result.face_landmarks[0]], dtype=np.float32)
+
+
 def detect(landmarker, frame_bgr: np.ndarray, timestamp_ms: int, data_dir: Path | None = None) -> list[Hand]:
     """MediaPipe on one UNMIRRORED BGR frame (README 6.1). Labels used as returned."""
     import cv2
@@ -184,8 +250,9 @@ def detect(landmarker, frame_bgr: np.ndarray, timestamp_ms: int, data_dir: Path 
 
 def extract_clip(video_path: Path, fps_hint: float | None = None, model_path: Path = cfg.MODEL_PATH,
                  data_dir: Path | None = None, params: dict | None = None) -> ClipResult:
-    """Read every frame of a clip, run MediaPipe, build the (32,128) sample."""
+    """Read every frame of a clip, run MediaPipe (hands and face), build the (32,149) rich sample."""
     import cv2
+    from .features import FACE_FLAG, frame_vector_rich
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise IOError(f"cannot open video {video_path}")
@@ -193,6 +260,12 @@ def extract_clip(video_path: Path, fps_hint: float | None = None, model_path: Pa
     vectors, counts, dups = [], [], []
     width = height = 0
     landmarker = create_landmarker(model_path, data_dir, params)
+    try:
+        face_landmarker = create_face_landmarker(data_dir)
+    except Exception:
+        landmarker.close()
+        cap.release()
+        raise
     try:
         i, last_ts = 0, -1
         while True:
@@ -203,7 +276,8 @@ def extract_clip(video_path: Path, fps_hint: float | None = None, model_path: Pa
             ts = max(last_ts + 1, int(round(i * 1000.0 / fps)))
             last_ts = ts
             hands = detect(landmarker, frame, ts, data_dir)
-            v, dup = frame_vector(hands, width, height)
+            face = detect_face(face_landmarker, frame, ts)
+            v, dup = frame_vector_rich(hands, width, height, face)
             if dup:
                 dups.append(i)
             vectors.append(v)
@@ -211,13 +285,15 @@ def extract_clip(video_path: Path, fps_hint: float | None = None, model_path: Pa
             i += 1
     finally:
         landmarker.close()
+        face_landmarker.close()
         cap.release()
     if not vectors:
         raise IOError(f"video has no readable frames: {video_path}")
     frames = np.stack(vectors)
     counts = np.asarray(counts)
     sample, start, end, hdr, bhr = window_and_sample(frames, counts, fps, data_dir, params)
-    return ClipResult(sample, frames, counts, fps, width, height, start, end, hdr, bhr, dups)
+    fdr = float((frames[start:end + 1, FACE_FLAG] > 0.5).mean())
+    return ClipResult(sample, frames, counts, fps, width, height, start, end, hdr, bhr, dups, fdr)
 
 
 # ----------------------------------------------------------------------------
@@ -286,7 +362,8 @@ def extract_image(image_path: Path, model_path: Path = cfg.MODEL_PATH, data_dir:
             lm.close()
     hands = [Hand(h[0].category_name, float(h[0].score), np.array([[q.x, q.y, q.z] for q in l], np.float32))
              for l, h in zip(res.hand_landmarks, res.handedness)]
-    frame = image_frame(hands, width, height)
+    from .features import photo_frame_rich
+    frame = photo_frame_rich(max(hands, key=lambda h: h.score) if hands else None, width, height)
     sample = np.repeat(frame[None], N_FRAMES, axis=0)
     found = 1.0 if hands else 0.0
     return ClipResult(sample, frame[None], np.array([len(hands)]), 30.0, w0, h0, 0, 0, found,

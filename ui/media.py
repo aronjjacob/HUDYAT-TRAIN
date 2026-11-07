@@ -46,6 +46,9 @@ def h264_preview(src: Path) -> Path | None:
 def show_video(src: Path) -> None:
     """A clip (H.264 preview copy) or, for an uploaded photo, the photo itself."""
     from trainer.landmarks import IMAGE_EXT
+    if not Path(src).exists():                       # e.g. a landmarks-only dataset: the samples, no videos
+        st.html('<div class="note">No video in this dataset: landmarks only. The skeleton shows the sample.</div>')
+        return
     if Path(src).suffix.lower() in IMAGE_EXT:
         st.image(str(src), width=340)
         return
@@ -95,7 +98,7 @@ function draw(j) {
   });
   // timeline: whole clip, trim window, current position (not for a photo)
   t.clearRect(0, 0, W, 46);
-  if (D.n_frames <= 1) { tl.style.display = "none"; cap.textContent = "Photo: the same hand is used for all 32 frames (a held-still sign)."; return; }
+  if (D.n_frames <= 1) { tl.style.display = "none"; cap.textContent = "Photo: a held-still sign, so the same hand is used for all 32 frames."; return; }
   const L = 4, R = W - 4, N = Math.max(1, D.n_frames - 1);
   const px = i => L + (R - L) * i / N;
   t.fillStyle = "#F7F7F5"; t.fillRect(L, 12, R - L, 12);

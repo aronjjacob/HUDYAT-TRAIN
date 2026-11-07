@@ -37,6 +37,8 @@ echo [2/4] Installing the packages (requirements.txt)...
 if errorlevel 1 (
   echo.
   echo Installing the packages failed. Check the internet connection and run this file again.
+  echo If the message above mentions "long path", the folder is too deep: move it closer to C:\
+  echo ^(for example C:\HUDYAT - TRAINER^), delete the venv folder inside it, and run this file again.
   goto :fail
 )
 

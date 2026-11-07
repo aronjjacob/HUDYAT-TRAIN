@@ -37,15 +37,15 @@ def env(tmp_path, monkeypatch):
 
 def test_categories(env):
     signs = ds.load_signs(env)
-    assert ds.model_categories(signs) == ["colors"]
-    assert ds.extract_categories(signs) == ["colors", "none"]
+    assert ds.model_categories(signs) == ["colors"]                 # a none category in the dataset is ignored
+    assert ds.extract_categories(signs) == ["colors"]
+    assert ds.extract_categories(signs, include_static=True) == ["colors", "alphabet_static_test"]
 
 
 def test_kept_rows_filters(env):
     k = ds.kept_rows(env)
     got = set(zip(k["signer"], k["sign_id"], k["take"]))
-    assert got == {("S1", "red", "1"), ("S2", "blue", "2"), ("S3", "none", "1"), ("S4", "blue", "1"),
-                   ("S4", "red", "1")}
+    assert got == {("S1", "red", "1"), ("S2", "blue", "2"), ("S4", "blue", "1"), ("S4", "red", "1")}  # no none
 
 
 def _index(env, rates):
@@ -60,13 +60,13 @@ def _index(env, rates):
     return paths
 
 
-def test_low_detection_excluded_except_none(env):
-    paths = _index(env, {("S4", "blue"): 0.79, ("S3", "none"): 0.0})
+def test_low_detection_excluded(env):
+    paths = _index(env, {("S4", "blue"): 0.79})
     u = ds.usable_samples(paths, env)
     reason = dict(zip(zip(u["signer"], u["sign_id"]), u["excluded_reason"]))
     assert "below 80%" in reason[("S4", "blue")]
-    assert reason[("S3", "none")] == ""
     assert reason[("S1", "red")] == ""
+    assert ("S3", "none") not in reason                                 # none clips are not even indexed
 
 
 def test_validation_rejection_excludes_and_last_decision_wins(env):
@@ -100,11 +100,30 @@ def test_extract_plan_per_category(env):
     from trainer import extract
     paths = cfg.Paths()
     todo, _ = extract.plan(paths, env)
-    assert {t["category"] for t in todo} == {"colors", "none"}
+    assert {t["category"] for t in todo} == {"colors"}                    # none clips are never extracted
     todo, _ = extract.plan(paths, env, categories=["none"])
-    assert {t["category"] for t in todo} == {"none"}
+    assert todo == []
     todo, _ = extract.plan(paths, env, categories=["alphabet_static_test"])
     assert [t["sign_id"] for t in todo] == ["static_a"]
+
+
+def test_extract_plan_redoes_samples_of_the_old_128_format(env):
+    """Samples made before v2 (32 x 128, no 'format') are extracted again into the rich form; rich ones are not."""
+    import numpy as np
+    from trainer import extract
+    paths = cfg.Paths()
+    todo, _ = extract.plan(paths, env, categories=["colors"])
+    rows = []
+    for t, fmt in zip(todo, ["", ds.SAMPLE_FORMAT]):                    # one old sample, one rich sample
+        (paths.work / t["file"]).parent.mkdir(parents=True, exist_ok=True)
+        np.save(paths.work / t["file"], np.zeros((32, 128 if not fmt else 149), np.float32))
+        rows.append(dict(t, status=ds.STATUS_OK, format=fmt))
+    ds.write_index(paths, rows)
+    todo2 = [t["file"] for t in extract.plan(paths, env, categories=["colors"])[0]]
+    assert rows[0]["file"] in todo2 and rows[1]["file"] not in todo2
+    ds.write_index(paths, [dict(r, format=ds.SAMPLE_FORMAT) for r in rows])
+    todo3 = [t["file"] for t in extract.plan(paths, env, categories=["colors"])[0]]
+    assert rows[0]["file"] not in todo3 and len(todo3) == len(todo) - 2
 
 
 def test_extraction_survives_a_crashed_helper(env, monkeypatch):
@@ -146,3 +165,13 @@ def test_extraction_survives_a_crashed_helper(env, monkeypatch):
     assert r["extracted"] == len(ds.kept_rows(env)) and CrashingPool.calls == 2
     idx = ds.read_index(cfg.Paths())
     assert len(idx) == len(ds.kept_rows(env))
+
+
+def test_restore_undoes_a_reject(env):
+    paths = cfg.Paths()
+    f = "dataset/raw/colors/red/S1/red_S1_01.mp4"
+    ds.add_validation(paths, f, "rejected", "hand out of frame", "tester")
+    assert f in ds.rejected_files(paths)
+    ds.add_validation(paths, f, "restored", "", "tester")
+    assert f not in ds.rejected_files(paths)
+    assert ds.latest_decisions(paths)[f]["decision"] == "restored"

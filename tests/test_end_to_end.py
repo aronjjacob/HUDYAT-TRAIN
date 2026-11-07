@@ -1,17 +1,17 @@
-"""End-to-end with REAL hand videos in a TEMPORARY fake data-collection folder.
+"""End-to-end with REAL hand videos in a TEMPORARY data-collection folder (tests/fake_dataset.py).
 
-FSL-105 clips are copied (read-only) from the recorder folder and relabelled S1-S7
-(tests/fake_dataset.py). The whole pipeline runs through the same functions the app's
-buttons start: extract -> split -> train (few epochs) -> evaluate -> export, then the
-live test is fed a recorded video through the hidden --video path.
+Our S1-S3 recordings are copied (read-only), S3 marked left-handed with mirrored videos. The whole pipeline runs
+through the same functions the app's buttons start, with few epochs:
+  Preprocess -> Test 1 -> Test 2 -> Final model -> Export for the app (its own loader vs Keras) -> Live (--video) -> Paper.
 These numbers are a pipeline check only, never real results.
 
-Slow (a few minutes). Skip with:  python -m pytest -m "not slow"
+Slow (several minutes). Skip with:  python -m pytest -m "not slow"
 """
 
 import csv
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -22,9 +22,11 @@ import fake_dataset as fd
 from trainer.settings import PROJECT_DIR
 
 pytestmark = [pytest.mark.slow,
-              pytest.mark.skipif(not fd.real_available(), reason="recorder folder with FSL-105 clips not found")]
+              pytest.mark.skipif(not fd.real_available(), reason="recorder folder with S1-S3 clips not found")]
 
 CAT = fd.CATEGORY
+FAST = {"epochs": 12, "batch_size": 16, "aug_factor": 2, "patience": 6, "seed": 42}
+SHOTS = PROJECT_DIR / "docs" / "screenshots" / "v2"
 
 
 @pytest.fixture(scope="module")
@@ -35,7 +37,7 @@ def project(tmp_path_factory):
     old = os.environ.get("HUDYAT_TRAINER_SETTINGS")
     os.environ["HUDYAT_TRAINER_SETTINGS"] = str(settings)
     from trainer import settings as cfg
-    yield {"root": root, "data": data, "settings": settings, "paths": cfg.Paths()}
+    yield {"root": root, "data": data, "settings": settings, "paths": cfg.Paths(), "runs": {}}
     if old is None:
         os.environ.pop("HUDYAT_TRAINER_SETTINGS", None)
     else:
@@ -48,127 +50,175 @@ def run_cli(project, *args, timeout=900):
                           timeout=timeout)
 
 
-def test_1_extract(project):
-    from trainer import extract, jobs
+def test_1_preprocess(project):
     from trainer import dataset as ds
+    from trainer import extract, jobs
     r = jobs.run_job("extract", extract.run, workers=4)
-    paths = project["paths"]
-    idx = ds.read_index(paths)
-    n_kept = len(fd.SIGNS) * fd.PER_SIGNER * 7 + fd.PER_SIGNER * 7      # colors + none
-    assert len(idx) == n_kept == r["extracted"]
-    assert list(idx.columns[:13]) == ["file", "category", "sign_id", "signer", "take", "fps", "n_frames",
-                                      "trim_start", "trim_end", "frames_kept", "hand_detect_rate",
-                                      "both_hands_rate", "status"]
-    assert set(idx["signer"]) == set("S1 S2 S3 S4 S5 S6 S7".split())           # no PUB, no needs_rerecord
-    assert "alphabet_static_test" not in set(idx["category"])
-    for f in idx["file"]:
-        a = np.load(paths.work / f)
-        assert a.shape == (32, 128) and a.dtype == np.float32
-        assert set(np.unique(a[:, [63, 127]])) <= {0.0, 1.0}
-    assert (idx["trim_end"].astype(int) >= idx["trim_start"].astype(int)).all()
-    # incremental: a second run extracts nothing
-    assert jobs.run_job("extract", extract.run, workers=2)["extracted"] == 0
-    # nothing was written into the (fake) data-collection folder
-    assert not any(p.suffix == ".npy" for p in project["data"].rglob("*"))
+    idx = ds.read_index(project["paths"])
+    n = len(fd.SIGNS) * len(fd.SIGNERS) * fd.PER_SIGNER                          # signs only: none clips ignored
+    assert len(idx) == n == r["extracted"]
+    assert set(idx["signer"]) == set(fd.SIGNERS)                                  # no PUB, no needs_rerecord
+    assert (idx["category"] != "none").all()
+    assert (idx["format"] == ds.SAMPLE_FORMAT).all()
+    for f in idx["file"][:5]:
+        a = np.load(project["paths"].work / f)
+        assert a.shape == (32, 149) and a.dtype == np.float32
+    assert jobs.run_job("extract", extract.run)["extracted"] == 0                  # incremental
 
 
-def test_2_split(project):
-    from trainer import jobs, split
-    jobs.run_job("split", split.run)
-    sp = json.loads(project["paths"].split_json(CAT).read_text())
-    assert sp["labels"] == fd.SIGNS + ["none"]
-    for name, signers in (("train", {"S1", "S2", "S3", "S4"}), ("val", {"S5"}), ("test", {"S6", "S7"})):
-        assert sp[name] and {it["signer"] for it in sp[name]} <= signers
+def test_2_hands_per_signer(project):
+    """The mirrored S3 videos really are left-handed: Auto finds the left hand for most of S3's sign clips."""
+    import pandas as pd
+    from trainer import dataset as ds
+    from trainer.handstats import hand_stats
+    idx = ds.read_index(project["paths"])
+    idx = idx[idx["category"] == CAT]
+    hands = ds.clip_hands(project["data"])
+    clips = pd.DataFrame({"file": idx["file"], "signer": idx["signer"],
+                          "hand": [hands[f] for f in idx["source_file"]], "source_file": idx["source_file"]})
+    per, bad = hand_stats(project["paths"].work, clips)
+    s3 = per.set_index("signer").loc[fd.LEFT]
+    assert s3["hand"] == "left" and s3["left_pct"] > s3["right_pct"]
+    assert (bad["signer"] == fd.LEFT).sum() <= fd.PER_SIGNER                      # few mismatches, if any
 
 
-def test_3_train(project):
-    from trainer import jobs, train
-    jobs.run_job("train", train.run, [CAT], epochs=6, batch_size=16, aug_factor=2, seed=42)
-    d = project["paths"].model_dir(CAT)
-    for f in ("model.keras", "labels.json", "config.json", "history.csv", "training_plot.png"):
-        assert (d / f).exists(), f
-    cfgj = json.loads((d / "config.json").read_text())
-    assert cfgj["options"]["seed"] == 42 and cfgj["input_shape"] == [32, 128]
-    assert "tensorflow" in cfgj["versions"] and cfgj["counts"]
-    with open(d / "history.csv") as f:
-        rows = list(csv.DictReader(f))
-    assert 1 <= len(rows) <= 6 and {"loss", "val_loss", "accuracy", "val_accuracy"} <= set(rows[0])
+def test_3_test1_random(project):
+    from trainer import experiments as E
+    from trainer import jobs
+    r = jobs.run_job("experiment", E.run, "random", CAT, dict(FAST))
+    d = E.run_dir(project["paths"], "random", CAT, r["run_id"])
+    conf, res = E.load_config(d), E.load_results(d)
+    assert res["complete"] and len(res["rounds"]) == 1
+    assert conf["opts"]["seed"] == 42 and "tensorflow" in conf["versions"]
+    files = [it["file"] for p in ("train", "val", "test") for it in conf["rounds"][0][p]]
+    assert len(files) == len(set(files))
+    assert (d / "figures" / "confusion_summed.png").exists() and (d / "figures" / "curves.png").exists()
+    project["runs"]["random"] = r["run_id"]
 
 
-def test_4_evaluate(project):
-    from trainer import evaluate, jobs
-    jobs.run_job("evaluate", evaluate.run, [CAT])
-    r = project["paths"].report_dir(CAT)
-    for f in ("report.md", "metrics.json", "confusion_matrix.png", "confusion_matrix.csv"):
-        assert (r / f).exists(), f
-    m = json.loads((r / "metrics.json").read_text())
-    assert set(m["per_signer"]) <= {"S6", "S7"} and m["per_signer"]
-    n = len(m["labels"])
-    assert np.array(m["pooled"]["confusion"]).shape == (n, n)
-    assert m["ms_per_sample"] > 0 and isinstance(m["pass"], bool)
-    with open(project["paths"].summary_csv) as f:
-        rows = list(csv.DictReader(f))
-    assert rows[0]["category"] == CAT and rows[0]["result"] in ("PASS", "FAIL")
+def test_4_test2_loso(project):
+    from trainer import experiments as E
+    from trainer import jobs
+    r = jobs.run_job("experiment", E.run, "loso", CAT, dict(FAST))
+    d = E.run_dir(project["paths"], "loso", CAT, r["run_id"])
+    conf, res = E.load_config(d), E.load_results(d)
+    assert [x["held_out"] for x in res["rounds"]] == fd.SIGNERS
+    for rd in conf["rounds"]:
+        assert rd["held_out"] not in {it["signer"] for it in rd["train"] + rd["val"]}
+        assert {it["signer"] for it in rd["test"]} == {rd["held_out"]}
+    assert res["summary"]["accuracy"]["sd"] is not None
+    h = res["handedness"]
+    assert h["auto_correct"]["recorded"] >= 0.8                       # Auto finds the signing hand on real clips
+    s3 = next(x for x in res["rounds"] if x["held_out"] == fd.LEFT)
+    print(f"\nLOSO mean {res['summary']['accuracy']['mean']:.1%}; S3 (left-handed) as recorded: "
+          f"without canonical {s3['handedness']['recorded']['none']['accuracy']:.1%}, with Auto "
+          f"{s3['handedness']['recorded']['auto']['accuracy']:.1%}")
+    project["runs"]["loso"] = r["run_id"]
 
 
-def test_5_export_matches_keras(project, tmp_path):
+def test_5_final_model_and_export(project, tmp_path):
     import keras
-    from trainer import jobs, tfjs_export
-    from test_tfjs_export import tfjs_predict
-    jobs.run_job("export", tfjs_export.run, [CAT])
+    from test_app_export import TFJS_TOOL
+    from trainer import app_export, final, jobs
+    run_id = project["runs"]["loso"]
+    jobs.run_job("train", final.run, CAT, from_run=run_id)
     d = project["paths"].model_dir(CAT)
-    t = d / "tfjs"
-    assert {"model.json", "group1-shard1of1.bin", "labels.json", "verify.json"} <= {p.name for p in t.iterdir()}
-    assert json.loads((t / "verify.json").read_text())["ok"]
-    assert json.loads((t / "labels.json").read_text()) == json.loads((d / "labels.json").read_text())
-    sp = json.loads(project["paths"].split_json(CAT).read_text())
-    X = np.stack([np.load(project["paths"].work / it["file"]) for it in sp["test"][:5]])
-    k = keras.models.load_model(d / "model.keras").predict(X, verbose=0)
-    topo, w = tfjs_export.read_tfjs(t / "model.json")
-    np.testing.assert_allclose(tfjs_export.forward_numpy(topo, w, X), k, atol=1e-5)
-    np.testing.assert_allclose(tfjs_predict(t / "model.json", X, tmp_path), k, atol=1e-4)
+    conf = json.loads((d / "config.json").read_text())
+    assert conf["from_run"] == run_id and conf["signers"] == fd.SIGNERS and conf["input_shape"] == [32, 128]
+    assert conf["labels"] == fd.SIGNS                          # the dataset has none clips: ignored, N signs -> N outputs
+    assert keras.models.load_model(d / "model.keras").output_shape == (None, len(fd.SIGNS))
+    pre = json.loads((d / "preprocess.json").read_text())
+    assert pre["feature_version"] == 1 and pre["handedness"]["canonical"] and pre["labels"] == conf["labels"]
+    jobs.run_job("export", app_export.run, [CAT])
+    t = project["paths"].exports / app_export.export_name(project["paths"], CAT, 1)
+    assert t.name == f"{CAT}-dabest-recorder-v1"
+    assert {"model.json", "weights.bin", "parity.json", "catalog_entry.json", "preprocessing.json"} <= \
+        {p.name for p in t.iterdir()}
+    chk = json.loads((t / "verify.json").read_text())
+    assert chk["ok"] and chk["real_clips"]
+    node = shutil.which("node")
+    if node and (TFJS_TOOL / "node_modules" / "@tensorflow" / "tfjs").exists():
+        out = tmp_path / "out.json"
+        subprocess.run([node, str(TFJS_TOOL / "app_predict.js"), str(t), str(out)], check=True, cwd=TFJS_TOOL,
+                       capture_output=True, timeout=300)
+        np.testing.assert_allclose(np.array(json.loads(out.read_text())["pred"]),
+                                   np.array(json.loads((t / "parity.json").read_text())["expected"]), atol=2e-4)
 
 
-def _concat_clips(files, out):
+def test_6_live_window_from_video(project):
+    """Hidden --video: the same code path as the webcam. A right-handed clip, then its mirrored copy with Hand = Auto
+    (the window must detect and mirror the left hand). Screens are saved for the docs."""
+    data = project["data"]
+    right = data / f"dataset/raw/{CAT}/hello/S1/hello_S1_01.mp4"
+    mirrored = project["root"] / "hello_S1_01_mirrored.mp4"
+    fd.mirror_video(right, mirrored)
+    shots = project["root"] / "shots"
+    r = run_cli(project, "live_test.py", "--category", CAT, "--video", str(right), "--hand", "auto", "--headless",
+                "--screenshot", str(shots / "free"))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "hand right" in r.stdout
+    r = run_cli(project, "live_test.py", "--category", CAT, "--mode", "test", "--tester", "pytest", "--tester-hand",
+                "left", "--target", "hello", "--trials", "1", "--video", str(mirrored), "--hand", "auto",
+                "--headless", "--screenshot", str(shots / "test"))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "hand left" in r.stdout                                    # Auto found the left hand and mirrored it
+    rows = list(csv.DictReader(open(project["paths"].live_tests / f"{CAT}.csv", encoding="utf-8")))
+    assert len(rows) == 1 and rows[0]["tester_hand"] == "left" and rows[0]["feature_version"] == "1"
+    assert rows[0]["model_run_id"].startswith(f"final-{CAT}")
+    # the HUDYAT app's exported model on the same left-handed video: the fixed capture mirrors it, the app's does not
+    for capture, hand in (("fixed", "hand left"), ("app", "hand none")):
+        r = run_cli(project, "live_test.py", "--category", CAT, "--video", str(mirrored), "--hand", "auto",
+                    "--headless", "--recognizer", "app", "--capture", capture)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert hand in r.stdout and "App model" in r.stdout
+    SHOTS.mkdir(parents=True, exist_ok=True)
+    for src, name in ((shots / "free" / "free.png", "live_free.png"), (shots / "test" / "summary.png",
+                                                                       "live_summary.png")):
+        assert src.exists(), src
+        shutil.copy2(src, SHOTS / name)
+
+
+def test_7_test_mode_screen(project):
+    """A two-trial run, so the Test screen (with a result) is saved before the summary."""
+    data = project["data"]
+    shots = project["root"] / "shots" / "test2"
+    video = project["root"] / "two_signs.mp4"
     import cv2
     w = None
-    for f in files:
+    for f in (data / f"dataset/raw/{CAT}/hello/S2/hello_S2_01.mp4", data / f"dataset/raw/{CAT}/hello/S2/hello_S2_02.mp4"):
         cap = cv2.VideoCapture(str(f))
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30
         while True:
             ok, fr = cap.read()
             if not ok:
                 break
             if w is None:
-                w = cv2.VideoWriter(str(out), cv2.VideoWriter_fourcc(*"mp4v"), fps, (fr.shape[1], fr.shape[0]))
+                w = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 30, (fr.shape[1], fr.shape[0]))
             w.write(fr)
         cap.release()
     w.release()
-
-
-def test_6_live_test_from_video(project):
-    """Hidden --video option: same code path as the webcam; one CSV row per attempt."""
-    data = project["data"]
-    clips = [data / f"dataset/raw/{CAT}/{s}/S6/{s}_S6_01.mp4" for s in fd.SIGNS]
-    video = project["root"] / "live_input.mp4"
-    _concat_clips(clips, video)
-    r = run_cli(project, "live_test.py", "--category", CAT, "--mode", "test", "--tester", "pytest",
-                "--target", "red", "--trials", "25", "--video", str(video), "--headless")
+    r = run_cli(project, "live_test.py", "--category", CAT, "--mode", "test", "--tester", "pytest", "--target",
+                "hello", "--trials", "3", "--video", str(video), "--headless", "--screenshot", str(shots))
     assert r.returncode == 0, r.stdout + r.stderr
-    attempts = [ln for ln in r.stdout.splitlines() if ln.startswith("attempt ")]
-    assert len(attempts) >= 1
-    csv_path = project["paths"].live_tests / f"{CAT}.csv"
-    rows = list(csv.DictReader(open(csv_path, encoding="utf-8")))
-    assert len(rows) == len(attempts)
-    for row in rows:
-        assert row["target"] == "red" and row["tester"] == "pytest"
-        assert row["prediction"] in fd.SIGNS + ["none"]
-        assert 0 <= float(row["confidence"]) <= 1 and float(row["response_time_ms"]) >= 0
-        assert row["correct"] == str(int(row["prediction"] == "red" and float(row["confidence"]) >= 0.70))
+    assert (shots / "test.png").exists()
+    shutil.copy2(shots / "test.png", SHOTS / "live_test.png")
 
 
-def test_7_cli_scripts_work_without_ui(project):
-    r = run_cli(project, "split.py", "--category", CAT)
-    assert r.returncode == 0, r.stderr
-    r = run_cli(project, "evaluate.py", "--category", CAT)             # refused without --confirm
-    assert r.returncode == 2 and "confirm" in r.stderr.lower()
+def test_8_paper(project):
+    from trainer import jobs, paper
+    out = jobs.run_job("paper", paper.run, CAT)
+    d = paper.out_dir(project["paths"], CAT)
+    for name in ("dataset_clips", "test1_recall", "test2_round_accuracy", "handedness",
+                 "live_accuracy", "benchmark"):
+        assert (d / "figures" / f"{name}.png").exists() and (d / "figures" / f"{name}.pdf").exists(), name
+    s = (d / "results_summary.md").read_text(encoding="utf-8")
+    assert project["runs"]["loso"] in s
+    for t in ("table6_random", "table7_loso", "table7_loso_per_fold", "errors_loso"):
+        assert (d / "tables" / f"{t}.csv").exists(), t
+    assert out["zip"].endswith("paper.zip")
+
+
+def test_9_cli_without_ui(project):
+    r = run_cli(project, "experiment.py", "--test", "loso")                        # no category: plain error
+    assert r.returncode == 2 and "category" in r.stderr.lower()
+    r = run_cli(project, "experiment.py", "--help")
+    assert r.returncode == 0 and "--no-canonical" in r.stdout

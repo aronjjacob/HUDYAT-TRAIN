@@ -1,8 +1,8 @@
-"""UI test of the upload path: Dataset page -> upload a .zip of photos -> Preprocess -> Split -> Train ->
-Evaluate -> Export -> Live Test, all by clicking in the real app (headless Chromium).
+"""UI test of the upload path: Data page -> upload a .zip of photos -> Scan -> Import -> Preprocess ->
+Test 1 (Test 2 is greyed out for photos) -> Train model -> Export, all by clicking in the real app (headless Chromium).
 
 Uses 3 letters x 30 photos of the alphabet-static dataset from Downloads (skipped when it is not there).
-Screenshots: docs/screenshots/upload_*.png
+Screenshots: docs/screenshots/v2/upload_*.png
 """
 
 import json
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from test_ui import SHOTS, assert_clean, click, free_port, open_page, settle, shoot, wait_job
+from test_ui import assert_clean, click, free_port, open_page, set_number, settle, shoot, tab, train_quickly, wait_job
 from trainer.settings import PROJECT_DIR
 
 PHOTOS = Path.home() / "Downloads" / "alphabet-static" / "Collated"
@@ -61,76 +61,59 @@ def pg(upapp):
         browser.close()
 
 
-def test_upload_zip_on_dataset_page(pg, upapp):
+def test_scan_then_import_zip(pg, upapp):
     open_page(pg, upapp, "")
-    pg.get_by_text("Add a dataset (upload a .zip or a folder)").click()
-    settle(pg, 600)
+    add = pg.get_by_role("tab", name="Add or combine datasets")
+    if add.count():                                   # a dataset is already in use (recordings found)
+        add.click()
+        settle(pg, 600)
     pg.locator('[data-testid="stFileUploaderDropzoneInput"]').first.set_input_files(str(upapp["zip"]))
-    settle(pg, 2000)
-    click(pg, "^Upload and use$")
     settle(pg, 3000)
-    assert_clean(pg, upapp, "dataset after upload")
-    assert pg.get_by_text("Added 'alphabet_mini'").count() == 1
-    assert "alphabet_mini" in pg.locator('[data-testid="stSidebar"] [data-testid="stSelectbox"]').first.inner_text()
-    assert pg.get_by_text("Files per sign").count() == 1
+    assert_clean(pg, upapp, "scan")
+    assert pg.get_by_text("none, photos").count() == 1          # the scan shows what was found first
+    assert not (upapp["root"] / "work" / "imports" / "alphabet_mini").exists()   # nothing copied yet
+    shoot(pg, "upload_1_scan")
+    click(pg, "^Import$")
+    settle(pg, 3000)
+    assert_clean(pg, upapp, "data after import")
+    assert pg.get_by_text("Imported 'alphabet_mini'", exact=False).count() == 1
+    assert "alphabet_mini" in pg.locator("body").inner_text()
     s = json.loads(upapp["settings"].read_text())
     assert "imports" in s["data_dir"] and "alphabet_mini" in s["data_dir"]
-    shoot(pg, "upload_1_dataset")
+    shoot(pg, "upload_2_data")
 
 
-def test_preprocess_split_train(pg, upapp):
+def test_preprocess_and_test_1_only(pg, upapp):
     open_page(pg, upapp, "preprocess")
-    click(pg, r"Extract new clips \(90\)")
+    click(pg, r"^Extract 90$")
     assert "Extracted" in wait_job(pg, upapp, "preprocess")
-    shoot(pg, "upload_2_preprocess")
-    open_page(pg, upapp, "split")
-    click(pg, "^Run split")
-    wait_job(pg, upapp, "split")
-    assert pg.get_by_text("Train (70 %)").count() == 1
-    shoot(pg, "upload_4_split")
-    open_page(pg, upapp, "train")
-    for label, value in (("Epochs", "8"), ("Aug. factor", "1"), ("Batch", "16")):
-        box = pg.get_by_role("spinbutton", name=label)
-        box.fill(value)
-        box.press("Tab")
-        settle(pg, 600)
-    click(pg, "^Start training")
-    wait_job(pg, upapp, "train")
-    assert pg.get_by_text("Saved models").count() == 1
-    shoot(pg, "upload_5_train")
-
-
-def test_evaluate_export_live(pg, upapp):
-    open_page(pg, upapp, "evaluate")
-    pg.get_by_text("Tuning is finished; evaluate on the test set once").click()
-    settle(pg)
-    pg.get_by_role("button", name="Evaluate on the test set", exact=True).click()
-    settle(pg, 800)
-    wait_job(pg, upapp, "evaluate")
+    open_page(pg, upapp, "test")
+    assert pg.get_by_role("button", name="Run Test 2", exact=True).is_disabled()
+    assert pg.get_by_text("Photos have no signers", exact=False).count() >= 1
+    pg.get_by_text("Settings for this run").click()
+    settle(pg, 600)
+    set_number(pg, "Max epochs", 6)
+    set_number(pg, "Extra copies", 1)
+    set_number(pg, "Batch", 16)
+    click(pg, "^Run Test 1$")
+    wait_job(pg, upapp, "test 1")
+    open_page(pg, upapp, "test")
     assert pg.locator(".verdict").count() == 1
-    assert pg.get_by_text("test split").count() >= 1
-    shoot(pg, "upload_6_evaluate")
-    open_page(pg, upapp, "export")
-    click(pg, "^Export to TF.js$")
+    shoot(pg, "upload_3_test")
+
+
+def test_final_model_and_export(pg, upapp):
+    open_page(pg, upapp, "final")
+    train_quickly(pg)
+    click(pg, r"^Train model · v1$")
+    wait_job(pg, upapp, "train model")
+    open_page(pg, upapp, "final")
+    tab(pg, "Export for the app")
+    click(pg, "^Export for the app$")
     wait_job(pg, upapp, "export")
-    assert pg.get_by_text("Check passed").count() >= 1
-    tfjs = upapp["root"] / "work" / "imports" / "alphabet_mini" / "work" / "models"
-    assert (tfjs / "alphabet_mini" / "tfjs" / "model.json").exists()
-    assert (tfjs / "alphabet_mini" / "tfjs" / "preprocess.json").exists()
-    open_page(pg, upapp, "live")
-    click(pg, "^Start live test$")
-    assert "Could not open camera 9" in wait_job(pg, upapp, "live", expect="error")
-
-
-def test_switch_back_to_recordings_keeps_outputs_apart(pg, upapp):
-    open_page(pg, upapp, "")
-    use = pg.get_by_role("button", name="Use", exact=True)
-    if use.count() == 0:
-        pytest.skip("no HAND TRACKER recordings on this computer")
-    use.first.click()
-    settle(pg, 2000)
-    assert_clean(pg, upapp, "switched")
-    assert "recordings" in pg.locator('[data-testid="stSidebar"] [data-testid="stSelectbox"]').first.inner_text()
-    open_page(pg, upapp, "train")
-    assert pg.get_by_text("Saved models").count() == 0          # the upload's model is not shown here
-    assert (SHOTS / "upload_6_evaluate.png").exists()
+    open_page(pg, upapp, "final")
+    assert pg.get_by_text("Exported and checked", exact=False).count() == 1
+    out = next((upapp["root"] / "work" / "imports" / "alphabet_mini" / "work" / "exports").iterdir())
+    assert out.name.endswith("-dabest-alphabet-mini-v1")
+    assert (out / "model.json").exists() and (out / "weights.bin").exists() and (out / "parity.json").exists()
+    shoot(pg, "upload_4_final")

@@ -1,4 +1,6 @@
-"""The category model (input 32x128) and helpers to load samples."""
+"""The category model (input 32 x 128). It is the network the HUDYAT app builds (client/src/features/
+fsl-recognition/category-core.js), layer for layer, including batch normalization's epsilon of 0.0001, so the
+exported weights give the same answers there."""
 
 from __future__ import annotations
 
@@ -9,17 +11,17 @@ import numpy as np
 from .landmarks import FRAME_DIM, N_FRAMES
 
 
-def build_model(n_classes: int, lr: float = 1e-3):
+def build_model(n_classes: int, lr: float = 1e-3, input_dim: int = FRAME_DIM):
     import keras
     from keras import layers
     model = keras.Sequential(name="hudyat_category_model", layers=[
-        keras.Input(shape=(N_FRAMES, FRAME_DIM), name="landmarks"),
+        keras.Input(shape=(N_FRAMES, int(input_dim)), name="landmarks"),
         layers.Conv1D(64, 3, padding="same", activation="relu", name="conv1d"),
-        layers.BatchNormalization(name="batch_normalization"),
+        layers.BatchNormalization(epsilon=1e-4, name="batch_normalization"),
         layers.MaxPooling1D(2, name="max_pooling1d"),
         layers.Dropout(0.3, name="dropout"),
         layers.Conv1D(128, 3, padding="same", activation="relu", name="conv1d_1"),
-        layers.BatchNormalization(name="batch_normalization_1"),
+        layers.BatchNormalization(epsilon=1e-4, name="batch_normalization_1"),
         layers.Dropout(0.3, name="dropout_1"),
         layers.Bidirectional(layers.LSTM(128, return_sequences=True, name="lstm"), name="bidirectional"),
         layers.Dropout(0.3, name="dropout_2"),
@@ -33,18 +35,19 @@ def build_model(n_classes: int, lr: float = 1e-3):
 
 
 def fast_predict(model):
-    """Compiled single-call prediction (x: (n,32,128) -> probabilities). About 100x faster per sample
-    than calling the Keras model eagerly; this is what the live test and the timing in Evaluate use."""
+    """Compiled single-call prediction (x: (n, 32, features) -> probabilities). About 100x faster per sample
+    than calling the Keras model eagerly; this is what the live test and the test timings use."""
     import tensorflow as tf
+    dim = int(model.input_shape[-1])
 
-    @tf.function(input_signature=[tf.TensorSpec([None, N_FRAMES, FRAME_DIM], tf.float32)], reduce_retracing=True)
+    @tf.function(input_signature=[tf.TensorSpec([None, N_FRAMES, dim], tf.float32)], reduce_retracing=True)
     def _predict(x):
         return model(x, training=False)
 
     def predict(x) -> np.ndarray:
         return _predict(np.asarray(x, dtype=np.float32)).numpy()
 
-    predict(np.zeros((1, N_FRAMES, FRAME_DIM), np.float32))          # trace once (warm-up)
+    predict(np.zeros((1, N_FRAMES, dim), np.float32))                # trace once (warm-up)
     return predict
 
 

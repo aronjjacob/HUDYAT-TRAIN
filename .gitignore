@@ -6,3 +6,7 @@ __pycache__/
 tools/tfjs_check/node_modules/
 venv_backup/
 .claude/
+backups/
+notes/
+models/face_landmarker.task
+docs/screenshots/v2/live_*.png

@@ -221,6 +221,7 @@ def test_extract_clip_synthetic_video_without_hands(tmp_path):
     w.release()
     r = L.extract_clip(p, 30.0, data_dir=None)
     assert r.n_frames == 20 and (r.trim_start, r.trim_end) == (0, 19)
-    assert r.sample.shape == (32, 128) and r.sample.dtype == np.float32
+    assert r.sample.shape == (32, 149) and r.sample.dtype == np.float32      # rich sample (docs/FEATURES.md)
+    assert r.frames.shape == (20, 149)
     assert np.all(r.sample == 0) and r.hand_detect_rate == 0.0
     assert (r.width, r.height) == (320, 240)

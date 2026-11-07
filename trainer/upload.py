@@ -96,8 +96,8 @@ def copy_folder(src: Path, dest: Path, progress=None) -> None:
     src = Path(src)
     if not src.is_dir():
         raise PlainError(f"The folder {src} does not exist.", "Choose the folder again.")
-    files = [p for p in src.rglob("*") if p.is_file() and (p.suffix.lower() in MEDIA_EXT or p.suffix.lower() == ".csv"
-                                                            or p.name == "hudyat_common.py")]
+    files = [p for p in src.rglob("*") if p.is_file() and (p.suffix.lower() in MEDIA_EXT + (".csv", ".npy")
+                                                            or p.name in ("hudyat_common.py", "dataset.json"))]
     if not files:
         raise PlainError(f"No photos or videos found in {src}.", "Choose the folder that holds the sign folders.")
     for i, p in enumerate(files):
@@ -186,7 +186,7 @@ def prepare(data: Path, name: str) -> UploadResult:
     media = sorted(p for p in data.rglob("*") if _is_media(p))
     if not media:
         raise PlainError("No photos or videos found in the upload.",
-                         "Put each sign in its own folder (e.g. A\\, B\\, ...) with its photos or videos inside.")
+                         "Put each sign in its own folder, e.g. A\\, B\\, ..., with its photos or videos inside.")
     signer_tree = [p for p in media if len(p.relative_to(data).parts) >= 4 and re.fullmatch(r"S\d+|PUB", p.parent.name)]
     if len(signer_tree) >= 0.8 * len(media):
         # layout 2: <category>/<sign>/<signer>/<file>
@@ -215,7 +215,7 @@ def prepare(data: Path, name: str) -> UploadResult:
             by_label[p.parent.name].append(p)
         if len(by_label) < 2:
             raise PlainError("The upload needs at least two sign folders.",
-                             "Put each sign in its own folder (e.g. A\\, B\\, ...) with its photos or videos inside.")
+                             "Put each sign in its own folder, e.g. A\\, B\\, ..., with its photos or videos inside.")
         splits = assign_splits(by_label)
         rows = []
         for label in sorted(by_label):
@@ -239,11 +239,29 @@ def prepare(data: Path, name: str) -> UploadResult:
         lines = ["category,sign_id,sign_label,reps,hands,mirror_ok"]
         for c, s in pairs:
             lab = labels_text.get(s, s) if res.layout.startswith("one folder") else s.replace("_", " ").title()
-            reps = 10 if c == cfg.NONE_CATEGORY else 15
-            lines.append(f"{c},{s},{lab},{reps},1,0")
+            lines.append(f"{c},{s},{lab},15,1,0")
         (data / "signs.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
     res.labels = dict(Counter(r["sign_id"] for r in rows))
     return res
+
+
+def install_landmarks(res: UploadResult, settings: dict | None = None) -> None:
+    """A landmarks-only dataset (dataset_export.py): its samples, index and review log become the work folder's, so
+    nothing needs extracting."""
+    root = Path(res.root)
+    if not cfg.landmarks_only(root):
+        return
+    if not (root / "landmarks_index.csv").exists():
+        raise PlainError("This landmark dataset has no landmarks_index.csv.", "Export it again from the trainer.")
+    work = cfg.Paths(dict(settings or cfg.load_settings(), data_dir=str(root))).work
+    work.mkdir(parents=True, exist_ok=True)
+    if (root / "landmarks").is_dir():
+        shutil.copytree(root / "landmarks", work / "landmarks", dirs_exist_ok=True)
+    for f in ("landmarks_index.csv", "validation.csv"):
+        if (root / f).exists():
+            shutil.copy2(root / f, work / f)
+    res.layout = "landmarks only"
+    res.notes.append("Landmarks only, no videos: nothing to extract. Go to Test the model or Train model.")
 
 
 def import_zip(zip_file, name: str, settings: dict | None = None) -> UploadResult:
@@ -251,6 +269,7 @@ def import_zip(zip_file, name: str, settings: dict | None = None) -> UploadResul
     try:
         unpack_zip(zip_file, data)
         res = prepare(data, final)
+        install_landmarks(res, settings)
     except BaseException:
         shutil.rmtree(data.parent, ignore_errors=True)
         raise
@@ -264,6 +283,7 @@ def import_folder(src: Path, name: str | None = None, settings: dict | None = No
     try:
         copy_folder(src, data, progress)
         res = prepare(data, final)
+        install_landmarks(res, settings)
     except BaseException:
         shutil.rmtree(data.parent, ignore_errors=True)
         raise
@@ -281,3 +301,125 @@ def list_imports(settings: dict | None = None) -> list[tuple[str, Path]]:
             if (root / "signs.csv").exists():
                 out.append((d.name, root))
     return out
+
+
+# ----------------------------------------------------------------------------
+# Scan before import: what is in a folder or .zip (nothing is copied)
+# ----------------------------------------------------------------------------
+@dataclass
+class ScanResult:
+    layout: str = ""                                   # recorder copy / videos per signer / one folder per sign
+    n_files: int = 0                                   # photos and videos found
+    n_clips: int = 0                                   # those that would be used
+    n_photos: int = 0
+    signers: dict = field(default_factory=dict)        # {signer: hand ("right" / "left" / "")}
+    signs: dict = field(default_factory=dict)          # {sign: clips}
+    problems: list = field(default_factory=list)       # why it cannot be imported
+    notes: list = field(default_factory=list)          # what is ignored / good to know
+
+    @property
+    def ok(self) -> bool:
+        return not self.problems and self.n_clips > 0
+
+
+def _signer_key(code: str) -> tuple:
+    m = re.fullmatch(r"S(\d+)", code)
+    return (int(m.group(1)) if m else 99, code)
+
+
+def _scan(names: list[str], read) -> ScanResult:
+    """names: relative POSIX paths of every file; read(name) -> bytes."""
+    import io
+
+    import pandas as pd
+    names = [n for n in names if n and not n.endswith("/") and not n.startswith("__MACOSX/")]
+    res = ScanResult()
+    roots = sorted({n[: -len("signs.csv")] for n in names if n.endswith("signs.csv") and n.count("/") <= 3}, key=len)
+    roots = [r for r in roots if f"{r}dataset/metadata.csv" in names]
+    if roots:
+        r = roots[0]
+        res.layout = "recorder copy"
+        meta = pd.read_csv(io.BytesIO(read(f"{r}dataset/metadata.csv")), dtype=str, keep_default_na=False,
+                           encoding="utf-8-sig")
+        meta.columns = [c.strip() for c in meta.columns]
+        res.n_files = len(meta)
+        ours = meta[meta["signer"].isin(cfg.SIGNERS) & (meta["status"] == "kept")]
+        res.n_clips = len(ours)
+        res.signs = dict(Counter(ours["sign_id"]))
+        hands = {}
+        if f"{r}signers.csv" in names:
+            sg = pd.read_csv(io.BytesIO(read(f"{r}signers.csv")), dtype=str, keep_default_na=False)
+            col = "hand" if "hand" in sg.columns else "signing_hand" if "signing_hand" in sg.columns else None
+            if col and "code" in sg.columns:
+                hands = {c: h.strip().lower() for c, h in zip(sg["code"], sg[col])}
+        for g in sorted(set(ours["signer"]), key=_signer_key):
+            h = ""
+            if "signing_hand" in ours.columns:
+                vals = set(ours[ours["signer"] == g]["signing_hand"].str.strip().str.lower()) - {""}
+                h = vals.pop() if len(vals) == 1 else ""
+            res.signers[g] = h or hands.get(g, "")
+        other = sorted(set(meta["signer"]) - set(cfg.SIGNERS))
+        if other:
+            res.notes.append(f"Ignored: {int(meta['signer'].isin(other).sum())} row(s) of {', '.join(other)} "
+                             "(only signers S1–S7 are used).")
+        if f"{r}dataset.json" in names and f"{r}landmarks_index.csv" in names:
+            res.layout = "landmarks only"
+            mine = meta[meta["status"] == "kept"]                  # also photo datasets, whose signer is not S1-S7
+            res.n_clips, res.signs = len(mine), dict(Counter(mine["sign_id"]))
+            res.notes.append(f"Landmarks only: {sum(n.startswith(r + 'landmarks/') and n.endswith('.npy') for n in names)} "
+                             "samples, no videos. Nothing to extract; it trains straight away.")
+        if not res.n_clips:
+            res.problems.append("This recorder folder has no kept clips of signers S1–S7 yet.")
+        return res
+    media = [n for n in names if Path(n).suffix.lower() in MEDIA_EXT and ".tmp." not in n]
+    res.n_files = len(media)
+    if not media:
+        res.problems.append("No photos or videos found.")
+        return res
+    tree = [n for n in media if len(Path(n).parts) >= 4 and re.fullmatch(r"S\d+|PUB", Path(n).parent.name)]
+    if len(tree) >= 0.8 * len(media):
+        res.layout = "videos per signer"
+        ours = [n for n in tree if Path(n).parent.name in cfg.SIGNERS]
+        res.n_clips = len(ours)
+        res.signs = dict(Counter(Path(n).parts[-3] for n in ours))
+        res.signers = {g: "" for g in sorted({Path(n).parent.name for n in ours}, key=_signer_key)}
+        ignored = sorted({Path(n).parent.name for n in tree} - set(cfg.SIGNERS))
+        if ignored:
+            res.notes.append(f"Ignored folder(s) {', '.join(ignored)}: only signers S1–S7 are used.")
+        res.notes.append("Folders don't say which hand a signer uses: every signer counts as right-handed.")
+        if not ours:
+            res.problems.append("No videos in signer folders S1–S7.")
+        return res
+    res.layout = "one folder per sign"
+    inside = [n for n in media if len(Path(n).parts) >= 2]
+    res.signs = dict(Counter(Path(n).parent.name for n in inside))
+    res.n_clips = len(inside)
+    res.n_photos = sum(Path(n).suffix.lower() in IMAGE_EXT for n in inside)
+    loose = len(media) - len(inside)
+    if loose:
+        res.notes.append(f"{loose} file(s) are not inside a sign folder and are ignored.")
+    if res.n_photos:
+        res.notes.append("Photos have no signer IDs, so only Test 1 (random split) is possible with this dataset.")
+    if len(res.signs) < 2:
+        res.problems.append("The upload needs at least two sign folders (for example A, B, C).")
+    return res
+
+
+def scan_folder(src: Path) -> ScanResult:
+    src = Path(src)
+    if not src.is_dir():
+        return ScanResult(problems=[f"The folder {src} does not exist."])
+    names = [p.relative_to(src).as_posix() for p in src.rglob("*") if p.is_file()]
+    return _scan(names, lambda n: (src / n).read_bytes())
+
+
+def scan_zip(zip_file) -> ScanResult:
+    try:
+        z = zipfile.ZipFile(zip_file)
+    except zipfile.BadZipFile:
+        return ScanResult(problems=["This file is not a readable .zip file. Zip the folder again and upload it."])
+    try:
+        return _scan(z.namelist(), z.read)
+    finally:
+        if hasattr(zip_file, "seek"):
+            zip_file.seek(0)

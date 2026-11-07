@@ -121,3 +121,56 @@ def test_on_the_fly_batches():
     np.testing.assert_array_equal(g2.batch(0)[0], seen[0])                   # same seed -> same batches
     g.next_epoch()
     assert not np.array_equal(g.batch(0)[0], seen[0])                       # new epoch -> new order / copies
+
+
+# --- rich samples (docs/FEATURES.md) -----------------------------------------------------------
+def rich_sample(left=True, right=True, seed=0):
+    from trainer import features as F
+    rng = np.random.default_rng(seed)
+    x = np.zeros((32, F.RICH_DIM), np.float32)
+    x[:, :128] = sample(left, right, seed)
+    for on, wr, sc in ((left, F.L_WRIST, F.L_SCALE), (right, F.R_WRIST, F.R_SCALE)):
+        if on:
+            x[:, wr] = np.cumsum(rng.normal(0, 0.01, (32, 3)), axis=0) + [0.6, 0.5, 0.0]
+            x[:, sc] = 0.12
+    return x
+
+
+def test_rich_absent_hand_extras_stay_zero():
+    from trainer import features as F
+    rng = np.random.default_rng(10)
+    x = rich_sample(left=True, right=False)
+    x[10:14, 0:64] = 0
+    x[10:14, F.L_WRIST] = 0
+    x[10:14, F.L_SCALE] = 0
+    for _ in range(100):
+        y = A.augment_one(x, rng, mirror_ok=False)
+        assert y.shape == (32, F.RICH_DIM)
+        assert not y[:, 64:128].any() and not y[:, F.R_WRIST].any() and not y[:, F.R_SCALE].any()
+        absent = y[:, 63] < 0.5
+        assert not y[absent][:, F.L_WRIST].any() and not y[absent][:, F.L_SCALE].any()
+
+
+def test_rich_rotation_turns_the_wrist_path_and_scale_leaves_it():
+    from trainer import features as F
+    x = rich_sample()
+    y = A.rotate(x, 90)
+    d, e = np.diff(x[:, F.L_WRIST], axis=0), np.diff(y[:, F.L_WRIST], axis=0)
+    np.testing.assert_allclose(e[:, 0], -d[:, 1], atol=1e-5)
+    np.testing.assert_allclose(e[:, 1], d[:, 0], atol=1e-5)
+    np.testing.assert_allclose(A.scale(x, 1.1)[:, 128:], x[:, 128:])
+
+
+def test_rich_mirror_is_the_feature_mirror():
+    from trainer import features as F
+    x = rich_sample(seed=3)
+    np.testing.assert_allclose(A.mirror(x), F.mirror(x))
+
+
+def test_on_the_fly_derives_the_feature_version():
+    X = np.stack([rich_sample(seed=i) for i in range(6)])
+    y = np.array([0, 1] * 3)
+    for version, dim in ((1, 128),):
+        g = A.OnTheFly(X, y, ["a", "b"], {}, factor=2, seed=1, batch_size=4, n_classes=2, version=version)
+        xb, yb, _ = g.batch(0)
+        assert xb.shape == (4, 32, dim)

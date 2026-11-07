@@ -71,6 +71,7 @@ header[data-testid="stHeader"] { background: transparent; height: 2.5rem; }
 .stat { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; background: #fff; }
 .stat .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text); line-height: 1.3; }
 .stat .l { font-size: 12.5px; color: var(--muted); }
+.stat.long .v { font-size: 15px; line-height: 1.5; overflow-wrap: anywhere; }
 .stat.ok .v { color: var(--ok); } .stat.warn .v { color: var(--warn); } .stat.err .v { color: var(--err); }
 
 /* ---- tables ---- */
@@ -93,22 +94,25 @@ table.t td.full { color: var(--ok); font-weight: 500; }
 .badge.warn { color: var(--warn); border-color: #EBD9BF; }
 .verdict { font-size: 22px; font-weight: 600; }
 .verdict.ok { color: var(--ok); } .verdict.err { color: var(--err); }
+.verdict-box { border: 1px solid var(--line); border-left: 3px solid var(--muted); border-radius: 6px; background: #fff;
+               padding: 8px 14px; margin: 6px 0 10px 0; }
+.verdict-box.ok { border-left-color: var(--ok); } .verdict-box.err { border-left-color: var(--err); }
+.verdict-box .verdict { margin-right: 12px; }
+.verdict-box ul { margin: 4px 0 0 0; padding-left: 18px; font-size: 13.5px; color: var(--err); }
 
-/* ---- sidebar ---- */
-[data-testid="stSidebar"] { min-width: 260px !important; max-width: 280px !important; }
-[data-testid="stSidebarContent"] { padding-top: 0.2rem; }
-.sb-title { font-size: 19px; font-weight: 600; color: var(--text); margin: 0; line-height: 1.2; }
-.sb-sub { font-size: 12.5px; color: var(--muted); margin: 2px 0 14px 0; }
-.sb-next { font-size: 12.5px; color: var(--muted); margin: 14px 0 4px 2px; line-height: 1.5; }
-.sb-next b { color: var(--accent); font-weight: 500; }
-.sb-legend { font-size: 11.5px; color: var(--muted); margin: 6px 0 0 2px; }
-.sb-job { font-size: 12.5px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 6px;
-          padding: 7px 10px; margin: 12px 0 2px 0; background: #fff; }
-[data-testid="stSidebar"] [data-testid="stPageLink"] a { padding: 3px 8px; border-radius: 6px; }
-[data-testid="stSidebar"] [data-testid="stPageLink"] p { font-size: 14px; }
-[data-testid="stSidebar"] [data-testid="stPageLink-NavLink"][aria-current="page"],
-[data-testid="stSidebar"] a[aria-current="page"] { background: #fff; box-shadow: inset 2px 0 0 var(--accent); }
-[data-testid="stSidebar"] hr { margin: 12px 0; border-color: var(--line); }
+/* ---- sidebar: white paper, numbered steps in a margin, notes as footnotes ---- */
+[data-testid="stSidebar"] { min-width: 230px !important; max-width: 240px !important; border-right: 1px solid #ECECEA !important; }
+[data-testid="stSidebarContent"] { padding: 1.6rem 1rem 0 1rem; }
+.sb-title { font-size: 11px; font-weight: 600; letter-spacing: .18em; text-transform: uppercase; color: #111;
+            margin: 0 0 26px 0; }
+[data-testid="stSidebar"] [data-testid="stPageLink"] a { padding: 7px 0 !important; background: transparent !important;
+  box-shadow: none !important; border-radius: 0 !important; }
+[data-testid="stSidebar"] [data-testid="stPageLink"] p { font-size: 14px !important; color: #8A8A8A; white-space: pre; }
+[data-testid="stSidebar"] a[aria-current="page"] p { color: #111 !important; font-weight: 600 !important; }
+.sb-foot { border-top: 1px solid #ECECEA; margin-top: 22px; padding-top: 10px; font-size: 11.5px; color: #999; line-height: 1.7; }
+.sb-next b { color: #333; font-weight: 500; }
+.sb-job { color: var(--accent); }
+[data-testid="stSidebar"] [data-testid="stSelectbox"] label p { font-size: 11px !important; color: #999; }
 
 /* ---- widgets ---- */
 .stButton > button, .stDownloadButton > button { font-weight: 500; box-shadow: none !important; }
@@ -120,3 +124,14 @@ div[data-testid="stProgress"] p { font-size: 13px; color: var(--muted); }
 [data-testid="stImage"] img { border: 1px solid var(--line); border-radius: 8px; }
 [data-testid="stCodeBlock"] pre, .stCode pre { font-size: 12px !important; }
 .stVideo video, [data-testid="stVideo"] { border-radius: 8px; }
+
+/* ---- Data page: headline, to-do list, progress per sign ---- */
+.dt-head { font-size: 20px; font-weight: 600; color: var(--text); margin: 4px 0 2px 0; }
+.dt-todo { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid #F0F0EE; }
+.dt-todo > span { color: var(--warn); }
+.dt-todo b { font-weight: 500; }
+.dt-bar { display: grid; grid-template-columns: 160px 1fr 70px; gap: 12px; align-items: center; padding: 4px 0; font-size: 13.5px; }
+.dt-bar > div { background: #F0F0EE; height: 6px; border-radius: 3px; }
+.dt-bar > div > div { height: 6px; border-radius: 3px; background: var(--accent); }
+.dt-bar > div > div.full { background: var(--ok); }
+.dt-bar > span:last-child { text-align: right; font-variant-numeric: tabular-nums; }

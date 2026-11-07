@@ -24,10 +24,9 @@ def _sha256(path: str, _mt: float) -> str:
 
 def render() -> None:
     s = cfg.load_settings()
-    page_header(None, "Settings", "Where the recordings are, which camera the live test uses, and the thresholds. "
-                                  "Saved in trainer_settings.json in this folder.")
+    page_header(None, "Settings", "Dataset, camera and thresholds.")
 
-    section("Dataset", "where the recordings are; only read, never changed")
+    section("Dataset")
     data_source.flash()
     current = cfg.data_dir(s)
     if current and not cfg.check_data_dir(current):
@@ -45,25 +44,30 @@ def render() -> None:
         cams.append(int(cur_cam))
     c1, c2 = st.columns(2)
     cam = c1.selectbox("Camera", cams, index=cams.index(int(cur_cam)) if int(cur_cam) in cams else 0,
-                       format_func=lambda i: f"Camera {i}" + (f"  ({rec['camera_name']})" if i == rec.get("camera")
+                       format_func=lambda i: f"Camera {i}" + (f" · {rec['camera_name']}" if i == rec.get("camera")
                                                              and rec.get("camera_name") else ""), key="cam")
     be = c2.selectbox("Backend", ["msmf", "dshow"], index=0 if cur_be == "msmf" else 1, key="backend",
-                      format_func=lambda b: {"msmf": "MSMF (Media Foundation, default)", "dshow": "DirectShow"}[b])
-    note(f"The recorder uses camera {rec.get('camera', 0)} ({rec.get('backend', 'msmf')}). "
-         "If the live window shows the wrong camera or stays black, pick another number here.")
+                      format_func=lambda b: {"msmf": "MSMF · Media Foundation, default", "dshow": "DirectShow"}[b])
+    note(f"Recorder: camera {rec.get('camera', 0)}. Wrong camera or black screen? Try another number.")
 
     section("Thresholds")
     c1, c2 = st.columns(2)
-    det = c1.slider("Minimum hand detection inside the sign window", 0.5, 1.0,
+    det = c1.slider("Minimum hand detection", 0.5, 1.0,
                     float(s.get("min_hand_detect_rate", 0.8)), 0.05, format="%.2f", key="det",
-                    help="Clips below this are left out of training (not the none class). Run Split again after changing.")
-    thr = c2.slider("Live test: minimum confidence", 0.3, 0.95, float(s.get("confidence_threshold", 0.7)), 0.05,
-                    format="%.2f", key="thr", help="Below this the live window shows 'Not sure, try again'.")
+                    help="Clips below this are left out of the tests and models.")
+    thr = c2.slider("Live test: minimum confidence", 0.3, 0.95, float(s.get("confidence_threshold", 0.85)), 0.05,
+                    format="%.2f", key="thr", help="Below this: 'Not sure, try again'.")
+    hands = ["auto", "right", "left"]
+    cur_hand = s.get("default_hand") if s.get("default_hand") in hands else "auto"
+    hand = st.radio("Live test: default hand of the tester", hands, index=hands.index(cur_hand), horizontal=True,
+                    key="hand", format_func=lambda h: {"auto": "Auto, detect per sign", "right": "Right",
+                                                       "left": "Left"}[h],
+                    help="Can be changed per tester, or with H in the live window.")
     changed = (cam != cur_cam or be != cur_be or det != float(s.get("min_hand_detect_rate", 0.8))
-               or thr != float(s.get("confidence_threshold", 0.7)))
+               or thr != float(s.get("confidence_threshold", 0.85)) or hand != cur_hand)
     if st.button("Save settings", key="save_settings", type="primary", disabled=not changed):
         cfg.save_settings({"camera": int(cam), "backend": be, "min_hand_detect_rate": float(det),
-                           "confidence_threshold": float(thr)})
+                           "confidence_threshold": float(thr), "default_hand": hand})
         st.rerun()
 
     section("Checks")
@@ -80,4 +84,5 @@ def render() -> None:
     else:
         banner("warning", "Trim and handedness rules: using the trainer's own copies.",
                "They are tested to give identical results. Choose the data-collection folder to use the recorder's file.")
-    note(f"Work folder (all outputs): {cfg.Paths(s).work}")
+    with st.expander("Details"):
+        note(f"Work folder with all outputs: {cfg.Paths(s).work}<br>Settings file: {cfg.settings_path()}")

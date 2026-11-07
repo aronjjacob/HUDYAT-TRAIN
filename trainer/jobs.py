@@ -25,9 +25,10 @@ from pathlib import Path
 from . import settings as cfg
 from .dataset import PlainError
 
-JOBS = ("extract", "split", "train", "evaluate", "export", "live")
-JOB_TITLES = {"extract": "Extraction", "split": "Split", "train": "Training", "evaluate": "Evaluation",
-              "export": "Export", "live": "Live test"}
+JOBS = ("extract", "experiment", "train", "export", "live", "paper", "dataset")
+JOB_TITLES = {"extract": "Extraction", "experiment": "Model test", "train": "Model training",
+              "export": "Export", "live": "Live test", "paper": "Figure generation",
+              "dataset": "Dataset export"}
 TOKEN_ENV = "HUDYAT_JOB_TOKEN"
 STALE_NO_PID_S = 60
 
@@ -108,8 +109,8 @@ def _mark_crashed(paths: cfg.Paths, info: dict) -> None:
     st = read_status(paths)
     if st and st.get("state") == "running" and st.get("token") == info.get("token"):
         st.update(state="error", finished=_now(),
-                  message=f"The {JOB_TITLES.get(info.get('job'), 'job')} stopped unexpectedly "
-                          "(the window was closed or the computer went to sleep).",
+                  message=f"The {JOB_TITLES.get(info.get('job'), 'job')} stopped unexpectedly: "
+                          "the window was closed or the computer went to sleep.",
                   hint="Start it again. Finished parts are kept.")
         save_status(paths, st)
 
@@ -172,13 +173,20 @@ def log_path(paths: cfg.Paths, job: str) -> Path:
     return paths.jobs / f"{job}.log"
 
 
+# MediaPipe / TensorFlow chatter that means nothing to the user
+_NOISE = ("W0000 ", "I0000 ", "E0000 ", "WARNING: All log messages before absl", "oneDNN custom operations",
+          "TF_ENABLE_ONEDNN_OPTS")
+
+
 def read_log(paths: cfg.Paths, job: str, tail_lines: int | None = None) -> str:
+    """The job's log. With tail_lines: only its last lines, without library noise."""
     p = log_path(paths, job)
     if not p.exists():
         return ""
     text = p.read_text(encoding="utf-8", errors="replace")
     if tail_lines:
-        text = "\n".join(text.splitlines()[-tail_lines:])
+        lines = [x for x in text.splitlines() if x.strip() and not any(n in x for n in _NOISE)]
+        text = "\n".join(lines[-tail_lines:])
     return text
 
 

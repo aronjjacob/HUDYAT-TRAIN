@@ -24,7 +24,7 @@ def test_second_job_refused_while_first_holds_lock(paths):
     assert jobs.acquire_lock(paths, "train", "tok1", None)
     assert jobs.busy(paths) == "train"
     assert not jobs.acquire_lock(paths, "extract", "tok2", None)
-    with pytest.raises(PlainError, match="Training is still running"):
+    with pytest.raises(PlainError, match="Model training is still running"):
         jobs.run_job("extract", lambda ctx: None, paths=paths)
     jobs.release_lock(paths, "wrong-token")
     assert jobs.busy(paths) == "train"
@@ -75,9 +75,9 @@ def test_run_job_error_releases_lock_with_plain_message(paths):
 def test_background_job_runs_and_survives_as_files(paths, monkeypatch):
     """start_background -> separate process; the app only reads files (so a refresh shows the same)."""
     import time
-    ok, msg = jobs.start_background("split", [], paths=paths)
+    ok, msg = jobs.start_background("experiment", ["--test", "random", "--category", "colors"], paths=paths)
     assert ok, msg
-    assert jobs.busy(paths) == "split"
+    assert jobs.busy(paths) == "experiment"
     ok2, msg2 = jobs.start_background("extract", [], paths=paths)
     assert not ok2 and "still running" in msg2
     for _ in range(600):
@@ -88,4 +88,4 @@ def test_background_job_runs_and_survives_as_files(paths, monkeypatch):
     st = jobs.read_status(paths)
     assert st["state"] == "error"                     # no data folder configured -> plain error
     assert "No dataset chosen" in st["message"]
-    assert jobs.log_path(paths, "split").exists()
+    assert jobs.log_path(paths, "experiment").exists()

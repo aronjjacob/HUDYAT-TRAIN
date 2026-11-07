@@ -10,10 +10,12 @@ import pandas as pd
 import streamlit as st
 
 from trainer import jobs
+from trainer.dataset import plural  # noqa: F401  ('1 clip', '3 clips'; the pages import it from here)
 from trainer import settings as cfg
 
 CSS_FILE = cfg.PROJECT_DIR / "static" / "app.css"
 ACCENT, GREY = "#1F4E99", "#8A8A8A"
+LOG_LINES = 15                       # a log shows only its last lines
 
 
 def inject_css() -> None:
@@ -33,6 +35,12 @@ def page_header(step: str | None, title: str, lede: str) -> None:
     st.html(f'{step_html}<div class="hd-title">{esc(title)}</div><div class="hd-lede">{esc(lede)}</div>')
 
 
+def headline(big: str, small: str, done: int, total: int) -> None:
+    """The line under every page title: how far this step is ("X of Y ..."), a quiet detail line and a bar."""
+    st.html(f'<div class="dt-head">{esc(big)}</div><div class="note">{small}</div>')
+    st.progress(done / total if total else 1.0)
+
+
 def section(title: str, note: str = "") -> None:
     st.html(f'<div class="sec">{esc(title)}{f"<small>{esc(note)}</small>" if note else ""}</div>')
 
@@ -48,10 +56,30 @@ def banner(kind: str, text: str, hint: str = "") -> None:
 
 
 def stats(items: list[tuple[str, object, str]]) -> None:
-    """Stat cards: [(label, value, tone)] with tone '' | ok | warn | err."""
-    cards = "".join(f'<div class="stat {tone}"><div class="v">{esc(v)}</div><div class="l">{esc(lab)}</div></div>'
-                    for lab, v, tone in items)
+    """Stat cards: [(label, value, tone)] with tone '' | ok | warn | err. Long values (names, ids) get a smaller
+    font so a card never grows to several lines."""
+    cards = "".join(f'<div class="stat {tone}{" long" if len(str(v)) > 14 else ""}"><div class="v">{esc(v)}</div>'
+                    f'<div class="l">{esc(lab)}</div></div>' for lab, v, tone in items)
     st.html(f'<div class="stats">{cards}</div>')
+
+
+def details_line(items: list[tuple[str, object]]) -> None:
+    """One quiet line of 'label value' pairs, for ids and dates that don't need a card."""
+    note(" · ".join(f'{esc(lab)} <b style="color:#1A1A1A;font-weight:500">{esc(v)}</b>' for lab, v in items))
+
+
+def next_link(snap, page: str) -> None:
+    """At the bottom of a page whose step is done: a link to the next step (only in the full app)."""
+    from . import state
+    keys = [k for k, _, _ in state.PAGES]
+    if page not in keys or not state.PAGE_OBJS or not state.steps_done(snap).get(page):
+        return
+    i = keys.index(page)
+    if i + 1 == len(keys):
+        return
+    nxt = keys[i + 1]
+    st.html('<div style="height:10px"></div>')
+    st.page_link(state.PAGE_OBJS[nxt], label=f"Next: {state.PAGES[i + 1][1]}", icon=":material/arrow_forward:")
 
 
 def table(df: pd.DataFrame, numeric: list[str] | None = None, classes: dict | None = None,
@@ -107,8 +135,9 @@ def _fmt_time(iso: str | None) -> str:
 
 
 def job_monitor(job: str, while_running: Callable[[], None] | None = None,
-                after: Callable[[], None] | None = None) -> None:
-    """Live progress + log while `job` runs (refreshes every second), else its last result."""
+                after: Callable[[], None] | None = None, quiet_success: bool = False) -> None:
+    """Live progress + log while `job` runs (refreshes every second), else its last result. quiet_success: the
+    page shows its own result, so a finished job only keeps its log (failures are still shown)."""
     paths = cfg.Paths()
     running_at_start = jobs.busy(paths)
 
@@ -126,21 +155,22 @@ def job_monitor(job: str, while_running: Callable[[], None] | None = None,
                 st.rerun()
             if while_running:
                 while_running()
-            with st.expander("Log (live)", expanded=False):
-                st.code(jobs.read_log(paths, job, tail_lines=40) or "...", language=None)
+            with st.expander("Log", expanded=False):
+                st.code(jobs.read_log(paths, job, tail_lines=LOG_LINES) or "...", language=None)
             return
         stt = jobs.read_status(paths, job)
         if not stt or stt.get("state") == "running":
             return
         when = _fmt_time(stt.get("finished"))
         if stt.get("state") == "done":
-            banner("success", stt.get("message") or "Finished.", f"Finished {when}.")
+            if not quiet_success:
+                banner("success", stt.get("message") or "Finished.", f"Finished {when}.")
         else:
             banner("error", stt.get("message") or "Failed.", stt.get("hint") or "")
-        log = jobs.read_log(paths, job)
+        log = jobs.read_log(paths, job, tail_lines=LOG_LINES)
         if log:
-            with st.expander("Full log", expanded=False):
-                st.code(log[-60000:], language=None)
+            with st.expander("Log", expanded=False):
+                st.code(log, language=None)
         if after:
             after()
 

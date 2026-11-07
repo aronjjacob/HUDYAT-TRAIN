@@ -8,6 +8,7 @@ unless adjusted on the Preprocess page; the values used are stored with every sa
 from __future__ import annotations
 
 import os
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
 from datetime import datetime
@@ -49,10 +50,11 @@ def _worker(job: dict) -> dict:
         row.update(fps=f"{r.fps:.3f}", n_frames=r.n_frames, trim_start=r.trim_start, trim_end=r.trim_end,
                    frames_kept=r.frames_kept, hand_detect_rate=f"{r.hand_detect_rate:.3f}",
                    both_hands_rate=f"{r.both_hands_rate:.3f}", width=r.width, height=r.height,
-                   status=ds.STATUS_OK if (row["category"] == cfg.NONE_CATEGORY
-                                           or r.hand_detect_rate >= job["thr"]) else ds.STATUS_LOW)
+                   face_detect_rate="" if r.face_detect_rate is None else f"{r.face_detect_rate:.3f}",
+                   status=ds.STATUS_OK if r.hand_detect_rate >= job["thr"] else ds.STATUS_LOW)
         row["_dups"] = r.duplicate_frames
         row["preprocess"] = job["params_id"]
+        row["format"] = ds.SAMPLE_FORMAT
     except Exception as e:  # noqa: BLE001
         row.update(status=ds.STATUS_FAILED, _error=f"{type(e).__name__}: {e}")
     row["extracted_at"] = datetime.now().isoformat(timespec="seconds")
@@ -101,7 +103,7 @@ def plan(paths: cfg.Paths, data_dir: Path, reextract_all: bool = False,
         rel = ds.npy_rel_path(m)
         old = existing.get(rel)
         if (not reextract_all and old is not None and old.get("status") != ds.STATUS_FAILED
-                and (paths.work / rel).exists()):
+                and old.get("format") == ds.SAMPLE_FORMAT and (paths.work / rel).exists()):
             continue
         todo.append({"file": rel, "category": m["category"], "sign_id": m["sign_id"], "signer": m["signer"],
                      "take": m.get("take", ""), "source_file": m["file_path"], "split": m.get("split", ""),
@@ -114,15 +116,26 @@ def run(ctx, reextract_all: bool = False, workers: int | None = None, categories
     data_dir = cfg.data_dir(s)
     problems = cfg.check_data_dir(data_dir)
     if problems:
-        raise ds.PlainError(problems[0], "Choose the dataset on the Dataset page (a folder or a .zip upload).")
+        raise ds.PlainError(problems[0], "Choose the dataset under Dataset in the sidebar, or add a folder or a .zip on the Data page.")
+    if cfg.landmarks_only(data_dir):        # no videos: re-extracting would replace good samples with failed ones
+        raise ds.PlainError("This dataset has landmarks only, no videos.",
+                            "Its samples are ready; go to Test the model.")
     if not cfg.MODEL_PATH.exists():
-        raise ds.PlainError("The MediaPipe hand model (models/hand_landmarker.task) is missing.",
+        raise ds.PlainError("The MediaPipe hand model models/hand_landmarker.task is missing.",
                             "Run 'SETUP (run once).bat' again; it copies the model from the recorder.")
+    from .landmarks import face_model_path
+    if not face_model_path(data_dir).exists():
+        raise ds.PlainError("The MediaPipe face model models/face_landmarker.task is missing.",
+                            "Download it as in Setup step 5 of the recorder's README; the trainer uses the "
+                            "recorder's copy.")
     paths = cfg.Paths(s)
     signs = ds.load_signs(data_dir)
     known = ds.extract_categories(signs, include_static=True)
-    if categories and cfg.NONE_CATEGORY in categories and cfg.NONE_CATEGORY not in known:
-        categories = [c for c in categories if c != cfg.NONE_CATEGORY]      # this dataset has no none class
+    if categories:
+        categories = [c for c in categories if c != cfg.NONE_CATEGORY]          # none clips are never extracted
+        if not categories:
+            raise ds.PlainError("'none' is not a sign category: the models only learn signs.",
+                                "Pick a sign category, or all.")
     unknown = [c for c in (categories or []) if c not in known]
     if unknown:
         raise ds.PlainError(f"Unknown category: {', '.join(unknown)}.", "Pick a category from the list.")
@@ -154,7 +167,16 @@ def run(ctx, reextract_all: bool = False, workers: int | None = None, categories
                      "data_dir": str(data_dir), "thr": thr, "params": params, "params_id": pid})
     index = dict(existing)
     done = failed = low = 0
+    t0 = time.time()
+
+    def eta(n: int) -> str:
+        if n < 3:
+            return ""
+        left = (time.time() - t0) / n * (len(jobs) - n)
+        return f"  ·  about {round(left / 60)} min left" if left >= 90 else "  ·  less than 2 min left"
     dup_lines = []
+    no_face: list[str] = []
+    face_thr = 0.8
 
     def handle(r: dict) -> None:
         nonlocal done, failed, low
@@ -164,13 +186,16 @@ def run(ctx, reextract_all: bool = False, workers: int | None = None, categories
             ctx.log(f"FAILED {r['source_file']}: {r.get('_error')}")
         elif r["status"] == ds.STATUS_LOW:
             low += 1
+        if r.get("face_detect_rate") not in (None, "") and float(r["face_detect_rate"]) < face_thr:
+            no_face.append(r["source_file"])
+            ctx.log(f"Face found in only {float(r['face_detect_rate']):.0%} of the sign: {r['source_file']}")
         for fr in r.pop("_dups", []) or []:
             dup_lines.append(f"{r['source_file']}\tframe {fr}")
         r.pop("_error", None)
         index[r["file"]] = r
         if done % 20 == 0 or done == len(jobs):
             ds.write_index(cfg.Paths(s), sorted(index.values(), key=lambda x: x["file"]))
-        ctx.progress(done / len(jobs), f"{done} / {len(jobs)} clips  ·  {r['sign_id']} {r['signer']}",
+        ctx.progress(done / len(jobs), f"{done} / {len(jobs)} clips  ·  {r['sign_id']} {r['signer']}{eta(done)}",
                      done=done, total=len(jobs))
 
     pending = list(jobs)
@@ -201,10 +226,12 @@ def run(ctx, reextract_all: bool = False, workers: int | None = None, categories
         with open(paths.duplicate_log, "a", encoding="utf-8") as f:
             f.write("\n".join(dup_lines) + "\n")
         ctx.log(f"{len(dup_lines)} frame(s) had two hands with the same label (logged).")
-    msg = f"Extracted {done - failed} clip(s)"
+    msg = f"Extracted {ds.plural(done - failed, 'clip')}"
     if low:
         msg += f", {low} with low hand detection"
+    if no_face:
+        msg += f", {len(no_face)} with the face found in < {face_thr:.0%} of the sign; consider retaking them"
     if failed:
-        msg += f", {failed} failed (see log)"
+        msg += f", {failed} failed; see the log"
     ctx.log(msg)
-    return {"message": msg + ".", "extracted": done - failed, "failed": failed, "low": low}
+    return {"message": msg + ".", "extracted": done - failed, "failed": failed, "low": low, "no_face": len(no_face)}
