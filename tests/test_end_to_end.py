@@ -46,7 +46,7 @@ def project(tmp_path_factory):
 
 def run_cli(project, *args, timeout=900):
     env = dict(os.environ, HUDYAT_TRAINER_SETTINGS=str(project["settings"]), TF_CPP_MIN_LOG_LEVEL="2")
-    return subprocess.run([sys.executable, *args], cwd=PROJECT_DIR, env=env, capture_output=True, text=True,
+    return subprocess.run([sys.executable, "-m", "trainer.runner", *args], cwd=PROJECT_DIR, env=env, capture_output=True, text=True,
                           timeout=timeout)
 
 
@@ -153,11 +153,11 @@ def test_6_live_window_from_video(project):
     mirrored = project["root"] / "hello_S1_01_mirrored.mp4"
     fd.mirror_video(right, mirrored)
     shots = project["root"] / "shots"
-    r = run_cli(project, "live_test.py", "--category", CAT, "--video", str(right), "--hand", "auto", "--headless",
+    r = run_cli(project, "live", "--category", CAT, "--video", str(right), "--hand", "auto", "--headless",
                 "--screenshot", str(shots / "free"))
     assert r.returncode == 0, r.stdout + r.stderr
     assert "hand right" in r.stdout
-    r = run_cli(project, "live_test.py", "--category", CAT, "--mode", "test", "--tester", "pytest", "--tester-hand",
+    r = run_cli(project, "live", "--category", CAT, "--mode", "test", "--tester", "pytest", "--tester-hand",
                 "left", "--target", "hello", "--trials", "1", "--video", str(mirrored), "--hand", "auto",
                 "--headless", "--screenshot", str(shots / "test"))
     assert r.returncode == 0, r.stdout + r.stderr
@@ -167,7 +167,7 @@ def test_6_live_window_from_video(project):
     assert rows[0]["model_run_id"].startswith(f"final-{CAT}")
     # the HUDYAT app's exported model on the same left-handed video: the fixed capture mirrors it, the app's does not
     for capture, hand in (("fixed", "hand left"), ("app", "hand none")):
-        r = run_cli(project, "live_test.py", "--category", CAT, "--video", str(mirrored), "--hand", "auto",
+        r = run_cli(project, "live", "--category", CAT, "--video", str(mirrored), "--hand", "auto",
                     "--headless", "--recognizer", "app", "--capture", capture)
         assert r.returncode == 0, r.stdout + r.stderr
         assert hand in r.stdout and "App model" in r.stdout
@@ -196,7 +196,7 @@ def test_7_test_mode_screen(project):
             w.write(fr)
         cap.release()
     w.release()
-    r = run_cli(project, "live_test.py", "--category", CAT, "--mode", "test", "--tester", "pytest", "--target",
+    r = run_cli(project, "live", "--category", CAT, "--mode", "test", "--tester", "pytest", "--target",
                 "hello", "--trials", "3", "--video", str(video), "--headless", "--screenshot", str(shots))
     assert r.returncode == 0, r.stdout + r.stderr
     assert (shots / "test.png").exists()
@@ -218,7 +218,7 @@ def test_8_paper(project):
 
 
 def test_9_cli_without_ui(project):
-    r = run_cli(project, "experiment.py", "--test", "loso")                        # no category: plain error
+    r = run_cli(project, "experiment", "--test", "loso")                        # no category: plain error
     assert r.returncode == 2 and "category" in r.stderr.lower()
-    r = run_cli(project, "experiment.py", "--help")
+    r = run_cli(project, "experiment", "--help")
     assert r.returncode == 0 and "--no-canonical" in r.stdout
